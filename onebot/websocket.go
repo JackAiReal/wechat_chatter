@@ -66,11 +66,12 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		case "get_group_member_info":
+			nickname, _ := userID2NicknameMap.Load(m.Params.GroupID + "_" + m.Params.UserID)
 			err = conn.WriteJSON(map[string]any{
 				"echo":   m.Echo,
 				"status": "ok",
 				"data": map[string]any{
-					"nickname": userID2NicknameMap.Load(m.Params.GroupID + "_" + m.Params.UserID),
+					"nickname": nickname,
 				},
 			})
 			if err != nil {
