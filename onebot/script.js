@@ -345,10 +345,39 @@ var uploadVideoX1 = ptr(0);
 var videoIdAddr = ptr(0);
 var videoPathAddr1 = ptr(0)
 
-var globalCdnKey = "";
-var globalAesKey = "";
-var globalMd5Key = "";
-var videoIdentity = "";
+
+// -------------------------上传队列 (解决并发问题)-------------------------
+// 图片上传完成队列 - 存储 {cdnKey, aesKey, md5Key, targetId}
+var imageUploadQueue = [];
+// 视频上传完成队列 - 存储 {cdnKey, aesKey, md5Key, videoIdentity, targetId}
+var videoUploadQueue = [];
+
+// 从队列中获取最早的可用上传信息
+function getImageUploadInfo() {
+    if (imageUploadQueue.length > 0) {
+        return imageUploadQueue.shift();
+    }
+    return null;
+}
+
+function getVideoUploadInfo() {
+    if (videoUploadQueue.length > 0) {
+        return videoUploadQueue.shift();
+    }
+    return null;
+}
+
+function pushImageUploadInfo(info) {
+    imageUploadQueue.push(info);
+    console.log("[+] 图片上传信息已入队，当前队列长度:", imageUploadQueue.length);
+}
+
+function pushVideoUploadInfo(info) {
+    videoUploadQueue.push(info);
+    console.log("[+] 视频上传信息已入队，当前队列长度:", videoUploadQueue.length);
+}
+
+// -------------------------上传队列 end-------------------------
 
 // 发送消息的全局变量
 var taskIdGlobal = 0x20000090 // 最好比较大，不和原始的微信消息重复
@@ -619,7 +648,7 @@ function attachSendTextProto() {
             this.context.x1 = textProtoX1PayloadAddr;
             this.context.x2 = ptr(finalPayload.length);
 
-            // console.log("[+] 寄存器修改完成: X1=" + this.context.x1 + ", X2=" + this.context.x2, hexdump(textProtoX1PayloadAddr, {
+            // console.log("[+] 文本寄存器修改完成: X1=" + this.context.x1 + ", X2=" + this.context.x2, hexdump(textProtoX1PayloadAddr, {
             //     offset: 0,
             //     length: 128,
             //     header: true,
@@ -1062,6 +1091,23 @@ function attachProto() {
             var currTaskId = this.context.sp.add(0x30).readU32();
             if (currTaskId !== taskIdGlobal) {
                 console.log(`[+] 拦截到非目标 currTaskId: ${currTaskId} taskIdGlobal: ${taskIdGlobal}`);
+                return;
+            }
+
+            // 从图片队列获取上传信息
+            const imgUploadInfo = getImageUploadInfo();
+            let cdnKey = "";
+            let aesKey = "";
+            let md5Key = "";
+            let targetId = "";
+
+            if (imgUploadInfo) {
+                cdnKey = imgUploadInfo.cdnKey;
+                aesKey = imgUploadInfo.aesKey;
+                md5Key = imgUploadInfo.md5Key;
+                targetId = imgUploadInfo.targetId
+            } else {
+                console.error("[!] 无法获取图片上传信息")
                 return
             }
 
@@ -1075,7 +1121,7 @@ function attachProto() {
             const sys = [0x55, 0x6E, 0x69, 0x66, 0x69, 0x65, 0x64, 0x50, 0x43, 0x4D, 0x61, 0x63, 0x20, 0x32, 0x36, 0x20, 0x61, 0x72, 0x6D, 0x36, 0x34, 0x30]
 
             // 45872025384@chatroom_176787000_60_xwechat_1 只需要改这个时间戳就能重复发送
-            const receiverMsgId = stringToHexArray(receiverGlobal).concat([0x5F])
+            const receiverMsgId = stringToHexArray(targetId).concat([0x5F])
                 .concat(stringToHexArray(Math.floor(Date.now() / 1000).toString()))
                 .concat([0x5F, 0x31, 0x36, 0x30, 0x5F, 0x78, 0x77, 0x65, 0x63, 0x68, 0x61, 0x74, 0x5F, 0x33]);
 
@@ -1085,9 +1131,9 @@ function attachProto() {
             const senderHeader = [0x1A, senderGlobal.length + 2, 0x0A, senderGlobal.length];
             // wxid_xxxx 或者 chatroom
             const sender = stringToHexArray(senderGlobal);
-            const receiverHeader = [0x22, receiverGlobal.length + 2, 0x0A, receiverGlobal.length]
+            const receiverHeader = [0x22, targetId.length + 2, 0x0A, targetId.length]
             // wxid_xxxx
-            const receiver = stringToHexArray(receiverGlobal)
+            const receiver = stringToHexArray(targetId)
             const randomId1 = [0x28, 0xF4, 0x0B]
             const type1 = [0x30, 0x00]
             const randomId2 = [0x38, 0xF4, 0x0B]
@@ -1107,27 +1153,27 @@ function attachProto() {
 
             const cdnHeader = [0x58, 0x01, 0x60, 0x02, 0x68, 0x00, 0x7A, 0xB2, 0x01]
             // 3057 开头的cdn key
-            const cdn = stringToHexArray(globalCdnKey);
+            const cdn = stringToHexArray(cdnKey);
 
             const cdn2Header = [0x82, 0x01, 0xB2, 0x01]
-            const cdn2 = stringToHexArray(globalCdnKey)
+            const cdn2 = stringToHexArray(cdnKey)
 
             const aesKeyHeader = [0x8A, 0x01, 0x20]
-            const aesKey = stringToHexArray(globalAesKey)
+            const aesKeyBytes = stringToHexArray(aesKey)
 
             const randomId5 = [0x90, 0x01, 0x01, 0x98, 0x01, 0xFF, // 0x2C8
                 0x13, 0xA0, 0x01, 0xFF, 0x13]
 
             const cdn3Header = [0xAA, 0x01, 0xB2, 0x01]
-            const cdn3 = stringToHexArray(globalCdnKey)
+            const cdn3 = stringToHexArray(cdnKey)
 
             const randomId6 = [0xB0, 0x01, 0xF4, 0x0B]
             const randomId7 = [0xB8, 0x01, 0x68]
             const randomId8 = [0xC0, 0x01, 0x3A]
             const aesKey1Header = [0xCA, 0x01, 0x20]
-            const aesKey1 = stringToHexArray(globalAesKey)
+            const aesKey1 = stringToHexArray(aesKey)
             const md5Header = [0xDA, 0x01, 0x20]
-            const me5Key = stringToHexArray(globalMd5Key)
+            const me5Key = stringToHexArray(md5Key)
 
             const randomId9 = [0xE0, 0x01, 0xd9, 0xe7, 0xc7, 0xF3, 0x02]
 
@@ -1138,16 +1184,16 @@ function attachProto() {
 
             const finalPayload = type.concat(msgId, cpHeader, fileCp, randomId, sysHeader, sys, msgIdHeader, receiverMsgId,
                 senderHeader, sender, receiverHeader, receiver, randomId1, type1, randomId2, randomId3, randomId4, htmlHeader, html,
-                cdnHeader, cdn, cdn2Header, cdn2, aesKeyHeader, aesKey, randomId5, cdn3Header, cdn3, randomId6, randomId7, randomId8,
+                cdnHeader, cdn, cdn2Header, cdn2, aesKeyHeader, aesKeyBytes, randomId5, cdn3Header, cdn3, randomId6, randomId7, randomId8,
                 aesKey1Header, aesKey1, md5Header, me5Key, randomId9, left0)
 
             imgProtoX1PayloadAddr.writeByteArray(finalPayload);
-            console.log("[+] Payload 已写入，长度: " + finalPayload.length);
+            console.log("[+] 图片 Payload 已写入，长度: " + finalPayload.length);
 
             this.context.x1 = imgProtoX1PayloadAddr;
             this.context.x2 = ptr(finalPayload.length);
 
-            // console.log("[+] 寄存器修改完成: X1=" + this.context.x1 + ", X2=" + this.context.x2, hexdump(imgProtoX1PayloadAddr, {
+            // console.log("[+] 图片 寄存器修改完成: X1=" + this.context.x1 + ", X2=" + this.context.x2, hexdump(imgProtoX1PayloadAddr, {
             //     offset: 0,
             //     length: 256,
             //     header: true,
@@ -1162,12 +1208,25 @@ function attachProto() {
             var currTaskId = this.context.sp.add(0x30).readU32();
             if (currTaskId !== taskIdGlobal) {
                 console.log(`[+] 拦截到非目标 currTaskId: ${currTaskId} taskIdGlobal: ${taskIdGlobal}`);
-                // console.log("[+] 视频寄存器修改完成: X1=" + this.context.x1 + ", X2=" + this.context.x2, hexdump(this.context.x1, {
-                //     offset: 0,
-                //     length: 1028,
-                //     header: true,
-                //     ansi: true
-                // }));
+                return;
+            }
+
+            // 从视频队列获取上传信息
+            const videoUploadInfo = getVideoUploadInfo();
+            let cdnKey = "";
+            let aesKey = "";
+            let md5Key = "";
+            let videoId = "";
+            let targetId = "";
+
+            if (videoUploadInfo) {
+                cdnKey = videoUploadInfo.cdnKey;
+                aesKey = videoUploadInfo.aesKey;
+                md5Key = videoUploadInfo.md5Key;
+                videoId = videoUploadInfo.videoIdentity;
+                targetId = videoUploadInfo.targetId;
+            }  else {
+                console.error("[!] 无法获取视频上传信息")
                 return
             }
 
@@ -1181,7 +1240,7 @@ function attachProto() {
             const sys = [0x55, 0x6E, 0x69, 0x66, 0x69, 0x65, 0x64, 0x50, 0x43, 0x4D, 0x61, 0x63, 0x20, 0x32, 0x36, 0x20, 0x61, 0x72, 0x6D, 0x36, 0x34]
 
             // 注意：这里 sender 和 receiver 互换了
-            const receiverMsgId = stringToHexArray(receiverGlobal).concat([0x5F])
+            const receiverMsgId = stringToHexArray(targetId).concat([0x5F])
                 .concat(stringToHexArray(Math.floor(Date.now() / 1000).toString()))
                 .concat([0x5F, 0x31, 0x36, 0x30, 0x5F, 0x78, 0x77, 0x65, 0x63, 0x68, 0x61, 0x74, 0x5F, 0x31]);
 
@@ -1191,9 +1250,9 @@ function attachProto() {
             const senderHeader = [0x1A, senderGlobal.length];
             // sender 和 receiver 互换了，sender 是 wxid_ldftuhe36izg19
             const sender = stringToHexArray(senderGlobal);
-            const receiverHeader = [0x22, receiverGlobal.length]
+            const receiverHeader = [0x22, targetId.length]
             // receiver 是 wxid_7wd1ece99f7i21
-            const receiver = stringToHexArray(receiverGlobal)
+            const receiver = stringToHexArray(targetId)
 
             const randomId1 = [0x28, 0xac, 0x73, 0x30, 0xac, 0x73, 0x3a, 0x04, 0x08, 0x00, 0x12, 0x00]
             const type1 = [0x40, 0xe8, 0xf2, 0x6f]
@@ -1211,37 +1270,36 @@ function attachProto() {
 
             const cdnHeader = [0x82, 0x01, 0xb2, 0x01]
             // 3057 开头的cdn key
-            const cdn = stringToHexArray(globalCdnKey);
+            const cdn = stringToHexArray(cdnKey);
 
             const aesKeyHeader = [0x8A, 0x01, 0x20]
-            const aesKey = stringToHexArray(globalAesKey)
+            const aesKeyBytes = stringToHexArray(aesKey)
 
             const randomId5 = [0x90, 0x01, 0x01, 0x9A, 0x01, 0xB2, 0x01]
 
-            const cdn2 = stringToHexArray(globalCdnKey)
+            const cdn2 = stringToHexArray(cdnKey)
 
             const randomId6 = [0xA0, 0x01, 0xAC, 0x73, 0xA8, 0x01, 0xE8, 0x02, 0xB0, 0x01, 0xCB, 0x01]
 
             const aesKey1Header = [0xBA, 0x01, 0x20]
-            const aesKey1 = stringToHexArray(globalAesKey)
-
+            const aesKey1 = stringToHexArray(aesKey)
             const md5Header = [0xd2, 0x01, 0x20]
-            const md5Key = stringToHexArray(globalMd5Key)
+            const md5KeyBytes = stringToHexArray(md5Key)
 
             const md5Header1 = [0xAA, 0x02, 0x20]
-            const md5Key1 = stringToHexArray(videoIdentity)
+            const md5Key1 = stringToHexArray(videoId)
 
             const randomId7 = [0xB0, 0x02, 0x00]
 
             const md5Key2Header = [0x82, 0x03, 0x20]
-            const md5Key2 = stringToHexArray(globalMd5Key)
+            const md5Key2 = stringToHexArray(md5Key)
 
             const cdn3Header = [0x8A, 0x03, 0xB2, 0x01]
-            const cdn3 = stringToHexArray(globalCdnKey)
+            const cdn3 = stringToHexArray(cdnKey)
 
             const randomId8 = [0x92, 0x03, 0x20]
 
-            const md5Key3 = stringToHexArray(globalAesKey)
+            const md5Key3 = stringToHexArray(aesKey)
 
             var left0 = [
                 0x98, 0x03, 0xe8, 0xf2, 0x6f
@@ -1249,7 +1307,7 @@ function attachProto() {
 
             const finalPayload = type.concat(msgId, cpHeader, fileCp, randomId, sysHeader, sys, msgIdHeader, receiverMsgId,
                 senderHeader, sender, receiverHeader, receiver, randomId1, type1, randomId2, randomId3, randomId4, htmlHeader, html,
-                cdnHeader, cdn, aesKeyHeader, aesKey, randomId5, cdn2, randomId6, aesKey1Header, aesKey1, md5Header, md5Key, md5Header1,
+                cdnHeader, cdn, aesKeyHeader, aesKeyBytes, randomId5, cdn2, randomId6, aesKey1Header, aesKey1, md5Header, md5KeyBytes, md5Header1,
                 md5Key1, randomId7, md5Key2Header, md5Key2, cdn3Header, cdn3, randomId8, md5Key3, left0)
 
             videoProtoX1PayloadAddr.writeByteArray(finalPayload);
@@ -1526,42 +1584,70 @@ function patchCdnOnComplete() {
                 const x2 = this.context.x2;
                 const currentFileId = x2.add(0x20).readPointer().readUtf8String();
                 const imageFileId = imageIdAddr.readUtf8String();
-                const videoFileId = videoIdAddr.readUtf8String()
+                const videoFileId = videoIdAddr.readUtf8String();
                 if (currentFileId !== imageFileId && currentFileId !== videoFileId) {
                     console.log("[-] CndOnComplete x2: " + x2 + " currentFileId: " + currentFileId +
                         " imageFileId: " + imageFileId + " videoFileId:" + videoFileId);
-                    return
+                    return;
                 }
 
-                globalCdnKey = x2.add(0x60).readPointer().readUtf8String();
-                globalAesKey = x2.add(0x78).readPointer().readUtf8String();
-                globalMd5Key = x2.add(0x90).readPointer().readUtf8String();
-                videoIdentity = x2.add(0xf0).readPointer().readUtf8String();
+                const cdnKey = x2.add(0x60).readPointer().readUtf8String();
+                const aesKey = x2.add(0x78).readPointer().readUtf8String();
+                const md5Key = x2.add(0x90).readPointer().readUtf8String();
+                const videoId = x2.add(0xf0).readPointer().readUtf8String();
                 const targetId = x2.add(0x40).readUtf8String();
-                console.log("X2: " + x2 + "[+] globalCdnKey: " + globalCdnKey + " globalAesKey: " + globalAesKey +
-                    " globalMd5Key: " + globalMd5Key + " videoIdentity:" + videoIdentity);
+
+                console.log("X2: " + x2 + "[+] cdnKey: " + cdnKey + " aesKey: " + aesKey +
+                    " md5Key: " + md5Key + " videoId:" + videoId);
+
                 send({
                     type: "finish",
-                })
+                });
 
-                if (globalCdnKey !== "" && globalCdnKey != null && globalAesKey !== "" && globalAesKey != null &&
-                    globalMd5Key !== "" && globalMd5Key != null) {
-                    let t = "upload_image_finish";
-                    if (videoIdentity !== null && videoIdentity !== "") {
-                        t = "upload_video_finish";
+                if (cdnKey !== "" && cdnKey != null && aesKey !== "" && aesKey != null &&
+                    md5Key !== "" && md5Key != null) {
+
+                    // 判断是图片还是视频，存入对应队列
+                    if (videoId !== null && videoId !== "") {
+                        // 视频
+                        pushVideoUploadInfo({
+                            cdnKey: cdnKey,
+                            aesKey: aesKey,
+                            md5Key: md5Key,
+                            videoIdentity: videoId,
+                            targetId: targetId
+                        });
+                        send({
+                            type: "upload_video_finish",
+                            target_id: targetId,
+                            cdn_key: cdnKey,
+                            aes_key: aesKey,
+                            md5_key: md5Key
+                        });
+                    } else {
+                        // 图片
+                        pushImageUploadInfo({
+                            cdnKey: cdnKey,
+                            aesKey: aesKey,
+                            md5Key: md5Key,
+                            targetId: targetId
+                        });
+                        send({
+                            type: "upload_image_finish",
+                            target_id: targetId,
+                            cdn_key: cdnKey,
+                            aes_key: aesKey,
+                            md5_key: md5Key
+                        });
                     }
-                    send({
-                        type: t,
-                        target_id: targetId,
-                    })
                 } else {
-                    console.error("cdnKey or aesKey or md5key 为空")
+                    console.error("cdnKey or aesKey or md5key 为空");
                 }
             } catch (e) {
                 console.log("[-] Memory access error at onEnter: " + e);
             }
         }
-    })
+    });
 }
 
 setImmediate(patchCdnOnComplete)
