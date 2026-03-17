@@ -21,6 +21,8 @@ var (
 
 	userID2NicknameMap sync.Map
 	userID2FileMsgMap  sync.Map
+	// 防止同一个 cdn_url 被并发重复触发自动下载
+	autoDownloadInProgress sync.Map
 )
 
 type WechatMessage struct {

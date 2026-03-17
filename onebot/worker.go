@@ -127,6 +127,83 @@ func SendWechatMsg(m *SendMsg) {
 	}
 }
 
+func scheduleAutoDownloadAndNotify(meta *WechatMessage, cdnURL, aesKey, targetID, fileName string, fileType int) {
+	if cdnURL == "" || aesKey == "" || targetID == "" {
+		return
+	}
+
+	if _, loaded := autoDownloadInProgress.LoadOrStore(cdnURL, true); loaded {
+		Info("自动下载已在进行中，跳过重复触发", "cdn_url", cdnURL)
+		return
+	}
+
+	autoPath := defaultManualDownloadPath(fileType)
+	msgChan <- &SendMsg{
+		UserId:     targetID,
+		Type:       "download",
+		FIleCdnUrl: cdnURL,
+		AesKey:     aesKey,
+		FilePath:   autoPath,
+		FileType:   fileType,
+	}
+
+	SendDownloadStatusCallback(map[string]any{
+		"time":            time.Now().UnixMilli(),
+		"post_type":       "notice",
+		"notice_type":     "download",
+		"download_status": "queued",
+		"message_type":    meta.MessageType,
+		"self_id":         meta.SelfID,
+		"user_id":         meta.UserID,
+		"group_id":        meta.GroupId,
+		"message_id":      meta.MessageId,
+		"file_type":       fileType,
+		"file_name":       fileName,
+		"cdn_url":         cdnURL,
+		"file_path":       autoPath,
+	})
+
+	go func() {
+		defer autoDownloadInProgress.Delete(cdnURL)
+		path, err := GetDownloadPath(cdnURL, aesKey)
+		if err != nil {
+			SendDownloadStatusCallback(map[string]any{
+				"time":            time.Now().UnixMilli(),
+				"post_type":       "notice",
+				"notice_type":     "download",
+				"download_status": "failed",
+				"message_type":    meta.MessageType,
+				"self_id":         meta.SelfID,
+				"user_id":         meta.UserID,
+				"group_id":        meta.GroupId,
+				"message_id":      meta.MessageId,
+				"file_type":       fileType,
+				"file_name":       fileName,
+				"cdn_url":         cdnURL,
+				"file_path":       "",
+				"error":           err.Error(),
+			})
+			return
+		}
+
+		SendDownloadStatusCallback(map[string]any{
+			"time":            time.Now().UnixMilli(),
+			"post_type":       "notice",
+			"notice_type":     "download",
+			"download_status": "done",
+			"message_type":    meta.MessageType,
+			"self_id":         meta.SelfID,
+			"user_id":         meta.UserID,
+			"group_id":        meta.GroupId,
+			"message_id":      meta.MessageId,
+			"file_type":       fileType,
+			"file_name":       fileName,
+			"cdn_url":         cdnURL,
+			"file_path":       "file://" + path,
+		})
+	}()
+}
+
 func HandleMsg(jsonData []byte) ([]byte, error) {
 	m := new(WechatMessage)
 	err := json.Unmarshal(jsonData, m)
@@ -172,13 +249,17 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 				Error("XML解析失败", "err", err)
 				continue
 			}
-			path, err := GetDownloadPath(fileMsg.AppMsg.AppAttach.CdnAttachURL, fileMsg.AppMsg.AppAttach.AesKey)
-			if err != nil {
-				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
-				continue
-			}
 
-			msg.Data.URL = "file://" + path
+			cdnURL := strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL)
+			aesKey := strings.TrimSpace(fileMsg.AppMsg.AppAttach.AesKey)
+			fileName := strings.TrimSpace(fileMsg.AppMsg.Title)
+
+			// 先保留原始消息回调，再异步下载并发送二次状态回调
+			targetID := m.UserID
+			if m.GroupId != "" {
+				targetID = m.GroupId
+			}
+			scheduleAutoDownloadAndNotify(m, cdnURL, aesKey, targetID, fileName, 5)
 		case "video":
 			var fileMsg FileMsg
 			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)

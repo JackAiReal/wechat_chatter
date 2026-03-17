@@ -138,6 +138,47 @@ func downloadHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func sendCallbackPayload(jsonReq []byte) {
+	Info("发送数据", "msg", string(jsonReq))
+	req, err := http.NewRequest("POST", config.SendURL, bytes.NewBuffer(jsonReq))
+	if err != nil {
+		Error("创建请求失败", "err", err)
+		return
+	}
+
+	// 统一签名头
+	h := hmac.New(sha1.New, []byte(config.OnebotToken))
+	h.Write(jsonReq)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Signature", "sha1="+hex.EncodeToString(h.Sum(nil)))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		Error("请求执行失败", "err", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		Error("读取响应失败", "err", err)
+		return
+	}
+
+	Info("返回内容", "status", resp.StatusCode, "body", string(body))
+}
+
+// SendDownloadStatusCallback 用于二次回调自动下载状态
+func SendDownloadStatusCallback(event map[string]any) {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		Error("下载状态回调序列化失败", "err", err)
+		return
+	}
+	sendCallbackPayload(payload)
+}
+
 func SendHttpReq(jsonData []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -155,36 +196,5 @@ func SendHttpReq(jsonData []byte) {
 		return
 	}
 
-	Info("发送数据", "msg", string(jsonReq))
-	req, err := http.NewRequest("POST", config.SendURL, bytes.NewBuffer(jsonReq))
-	if err != nil {
-		Error("创建请求失败", "err", err)
-		return
-	}
-
-	// 5. 设置 Header (OneBot 接口通常要求 application/json)
-	h := hmac.New(sha1.New, []byte(config.OnebotToken))
-	h.Write(jsonReq)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Signature", "sha1="+hex.EncodeToString(h.Sum(nil)))
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	// 6. 执行请求
-	resp, err := client.Do(req)
-	if err != nil {
-		Error("请求执行失败", "err", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	// 7. 读取返回结果
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		Error("读取响应失败", "err", err)
-		return
-	}
-
-	Info("返回内容", "status", resp.StatusCode, "body", string(body))
+	sendCallbackPayload(jsonReq)
 }
