@@ -21,15 +21,18 @@ func SendWorker() {
 		}
 	}()
 
+	for m := range msgChan {
+		SendWechatMsg(m)
+	}
+}
+
+func drainFinishChan() {
 	for {
 		select {
 		case <-finishChan:
-			Info("收到完成信号")
-		case m, ok := <-msgChan:
-			if !ok {
-				return
-			}
-			SendWechatMsg(m)
+			Info("丢弃过期完成信号")
+		default:
+			return
 		}
 	}
 }
@@ -39,7 +42,14 @@ func SendWechatMsg(m *SendMsg) {
 	currTaskId := atomic.AddInt64(&taskId, 1)
 	Info("📩 收到任务", "task_id", currTaskId)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// 避免旧任务残留的 finish 信号污染当前任务
+	drainFinishChan()
+
+	timeout := 15 * time.Second
+	if m.Type == "image" || m.Type == "video" || m.Type == "send_image" || m.Type == "send_video" {
+		timeout = 25 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	targetId := m.UserId
