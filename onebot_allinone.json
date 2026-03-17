@@ -15,6 +15,7 @@
 
   "callback_listen": "127.0.0.1:18888",
   "callback_path": "/onebot",
+  "callback_dump_jsonl": "",
 
   "auto_build": true
 }

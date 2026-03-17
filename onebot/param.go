@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"sync"
-	
+
 	"github.com/frida/frida-go/frida"
 )
 
@@ -13,12 +13,12 @@ var (
 	session     *frida.Session
 	taskId      = int64(0x20000000)
 	myWechatId  = ""
-	
+
 	msgChan    = make(chan *SendMsg, 10)
 	finishChan = make(chan struct{})
-	
+
 	config = &Config{}
-	
+
 	userID2NicknameMap sync.Map
 	userID2FileMsgMap  sync.Map
 )
@@ -49,7 +49,7 @@ type SendMsg struct {
 	Content string
 	Type    string
 	AtUser  string
-	
+
 	FIleCdnUrl string
 	Md5        string
 	AesKey     string
@@ -62,6 +62,24 @@ type SendRequest struct {
 	Message []*Message `json:"message"`
 	UserID  string     `json:"user_id"`
 	GroupID string     `json:"group_id"`
+}
+
+// ManualDownloadRequest 允许外部手动触发媒体下载
+// file_type: 1=HdImage, 2=Image, 3=ThumbImage, 4=Video, 5=File
+// target_id: 私聊填 wxid_xxx，群聊填 xxx@chatroom
+// file_path: 可选，不传则自动落到 onebot 目录下 file/ 目录
+// cdn_url/aes_key: 从消息 XML 或回调中提取
+// md5: 可选，仅用于辅助排查
+// file_id: 可选，仅用于日志
+// 注意：此接口用于“下载媒体并落地”场景，不影响普通文本发送。
+type ManualDownloadRequest struct {
+	TargetID string `json:"target_id"`
+	CdnURL   string `json:"cdn_url"`
+	AesKey   string `json:"aes_key"`
+	FilePath string `json:"file_path"`
+	FileType int    `json:"file_type"`
+	MD5      string `json:"md5"`
+	FileID   string `json:"file_id"`
 }
 
 type Message struct {
@@ -87,7 +105,7 @@ type Config struct {
 	ImagePath       string `json:"image_path"`
 	ConnType        string `json:"conn_type"`
 	SendInterval    int    `json:"send_interval"`
-	
+
 	WechatConf string `json:"wechat_conf"`
 }
 
@@ -140,7 +158,7 @@ type Image struct {
 	HDHeight    int    `xml:"cdnhdheight,attr"`
 	HDWidth     int    `xml:"cdnhdwidth,attr"`
 	MidImgURL   string `xml:"cdnmidimgurl,attr"`
-	
+
 	// 子节点
 	SecHashInfo string `xml:"secHashInfoBase64"`
 	Live        Live   `xml:"live"`

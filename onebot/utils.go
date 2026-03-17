@@ -18,45 +18,82 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	
+
 	"github.com/wdvxdr1123/go-silk"
 )
 
-func SaveBase64Image(base64Data string) (string, string, error) {
-	rawContents := base64Data
-	if strings.HasPrefix(base64Data, "base64://") {
-		rawContents = strings.TrimPrefix(base64Data, "base64://")
-	} else if idx := strings.Index(base64Data, ","); idx != -1 {
-		rawContents = base64Data[idx+1:]
+func SaveBase64Image(mediaInput string) (string, string, error) {
+	if mediaInput == "" {
+		return "", "", fmt.Errorf("media input is empty")
 	}
-	
-	data, err := base64.StdEncoding.DecodeString(rawContents)
-	if err != nil {
-		return "", "", fmt.Errorf("base64 decode failed: %v", err)
+
+	var data []byte
+	var err error
+
+	trimmed := strings.TrimSpace(mediaInput)
+
+	// 支持直接传 URL / file:// / 绝对路径
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "file://") {
+		data, err = DownloadFile(trimmed)
+		if err != nil {
+			return "", "", fmt.Errorf("download media failed: %v", err)
+		}
+	} else if filepath.IsAbs(trimmed) {
+		data, err = os.ReadFile(trimmed)
+		if err != nil {
+			return "", "", fmt.Errorf("read local media failed: %v", err)
+		}
+	} else {
+		// 其余情况按 base64 处理（兼容 base64:// 与 data: 前缀）
+		rawContents := trimmed
+		if strings.HasPrefix(trimmed, "base64://") {
+			rawContents = strings.TrimPrefix(trimmed, "base64://")
+		} else if idx := strings.Index(trimmed, ","); idx != -1 && strings.Contains(trimmed[:idx], "base64") {
+			rawContents = trimmed[idx+1:]
+		}
+
+		data, err = base64.StdEncoding.DecodeString(rawContents)
+		if err != nil {
+			return "", "", fmt.Errorf("base64 decode failed: %v", err)
+		}
+
+		// 与原逻辑保持一致：追加轻量 salt，避免完全相同内容导致重复逻辑冲突
+		salt := []byte(fmt.Sprintf("\n#md5_salt_%d_%d#", time.Now().UnixNano(), rand.Intn(10000)))
+		data = append(data, salt...)
 	}
-	salt := []byte(fmt.Sprintf("\n#md5_salt_%d_%d#", time.Now().UnixNano(), rand.Intn(10000)))
-	data = append(data, salt...)
-	
+
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	randomNumber := r.Intn(1000) // 生成 0-999 的随机数
+	randomNumber := r.Intn(1000)
 	timestamp := time.Now().Unix()
-	fileName := fmt.Sprintf("%d_%d.%s", randomNumber, timestamp, DetectFileFormat(data))
-	targetPath := config.ImagePath + fileName
-	dir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	ext := DetectFileFormat(data)
+	if ext == "unknown" {
+		ext = "bin"
+	}
+	fileName := fmt.Sprintf("%d_%d.%s", randomNumber, timestamp, ext)
+
+	targetDir := strings.TrimSpace(config.ImagePath)
+	if targetDir == "" {
+		if exePath, e := os.Executable(); e == nil {
+			targetDir = filepath.Join(filepath.Dir(exePath), "upload_media")
+		} else {
+			targetDir = "./upload_media"
+		}
+	}
+
+	targetPath := filepath.Join(targetDir, fileName)
+	if err = os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", "", fmt.Errorf("create directory failed: %v", err)
 	}
-	
-	err = os.WriteFile(targetPath, data, 0644)
-	if err != nil {
+
+	if err = os.WriteFile(targetPath, data, 0o644); err != nil {
 		return "", "", fmt.Errorf("write file failed: %v", err)
 	}
-	
+
 	md5Str, err := GetFileMD5(targetPath)
 	if err != nil {
 		return "", "", fmt.Errorf("get file md5 failed: %v", err)
 	}
-	
+
 	return targetPath, md5Str, nil
 }
 
@@ -66,7 +103,7 @@ func GetFileMD5(filePath string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	
+
 	hash := md5.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
@@ -79,12 +116,12 @@ func SaveAudioFile(silkBytes []byte) (path string, err error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	
+
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randomNumber := r.Intn(1000)
 	timestamp := time.Now().Unix()
@@ -94,7 +131,7 @@ func SaveAudioFile(silkBytes []byte) (path string, err error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	return targetPath, nil
 }
 
@@ -103,7 +140,7 @@ func SilkToMp3(silkBytes []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	cmd := exec.Command("ffmpeg",
 		"-f", "s16le",
 		"-ar", "16000",
@@ -115,16 +152,16 @@ func SilkToMp3(silkBytes []byte) ([]byte, error) {
 		"pipe:1",
 	)
 	cmd.Stdin = bytes.NewReader(pcm)
-	
+
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	
+
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ffmpeg error: %v, details: %s", err, stderr.String())
 	}
-	
+
 	return out.Bytes(), nil
 }
 
@@ -135,12 +172,12 @@ func GetFilePath(data []byte, key []byte) (string, error) {
 	for i := 0; i < len(data); i += bs {
 		block.Decrypt(decrypted[i:i+bs], data[i:i+bs])
 	}
-	
+
 	ext := DetectFileFormat(decrypted)
 	if ext == "unknown" {
 		return "", fmt.Errorf("无法解析的文件数据")
 	}
-	
+
 	return SaveFileToFile(ext, decrypted)
 }
 
@@ -149,7 +186,7 @@ func DetectFileFormat(data []byte) string {
 	if len(data) < 8 {
 		return "unknown"
 	}
-	
+
 	switch {
 	// 视频格式
 	case bytes.HasPrefix(data, []byte{0x00, 0x00, 0x00}): // MP4/MOV 通常以 ftyp 开头，后面是具体类型
@@ -167,7 +204,7 @@ func DetectFileFormat(data []byte) string {
 		if len(data) > 8 && bytes.HasPrefix(data[8:], []byte{0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C}) {
 			return "wmv"
 		}
-	
+
 	// 图片格式
 	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
 		return "jpg"
@@ -179,29 +216,29 @@ func DetectFileFormat(data []byte) string {
 		return "bmp"
 	case bytes.HasPrefix(data, []byte("RIFF")) && len(data) > 8 && bytes.HasPrefix(data[8:], []byte("WEBP")):
 		return "webp"
-	
+
 	// 文档格式
 	case bytes.HasPrefix(data, []byte("%PDF")):
 		return "pdf"
-	
+
 	// Office 2007+ 格式 (docx, xlsx, pptx 都是 ZIP 格式)
 	case bytes.HasPrefix(data, []byte{0x50, 0x4B, 0x03, 0x04}):
 		return detectOfficeFormat(data)
-	
+
 	// Office 97-2003 格式 (OLE2 格式)
 	case bytes.HasPrefix(data, []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}):
 		return detectLegacyOfficeFormat(data)
-	
+
 	// 压缩文件
 	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07")):
 		return "rar"
 	case bytes.HasPrefix(data, []byte("7z\xBC\xAF\x27\x1C")):
 		return "7z"
-	
+
 	default:
 		return "unknown"
 	}
-	
+
 	return "unknown"
 }
 
@@ -244,30 +281,30 @@ func SaveFileToFile(ext string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randomNumber := r.Intn(1000)
 	timestamp := time.Now().Unix()
-	
+
 	// 根据文件类型选择保存目录
 	dir := "file"
 	if ext == "jpg" || ext == "png" || ext == "gif" || ext == "bmp" || ext == "webp" {
 		dir = "image"
 	}
-	
+
 	fileName := fmt.Sprintf("%d_%d.%s", randomNumber, timestamp, ext)
 	targetPath := filepath.Dir(exePath) + "/" + dir + "/" + fileName
-	
+
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return "", err
 	}
-	
+
 	err = os.WriteFile(targetPath, data, 0644)
 	if err != nil {
 		return "", err
 	}
-	
+
 	return targetPath, nil
 }
 
@@ -276,7 +313,7 @@ func SaveImageToFile(ext string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randomNumber := r.Intn(1000)
 	timestamp := time.Now().Unix()
@@ -286,7 +323,7 @@ func SaveImageToFile(ext string, data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	return targetPath, nil
 }
 
@@ -296,7 +333,7 @@ func GetWeChatPID() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("未发现正在运行的微信进程")
 	}
-	
+
 	return strconv.Atoi(strings.TrimSpace(string(output)))
 }
 
@@ -304,13 +341,13 @@ func DownloadFile(urlStr string) ([]byte, error) {
 	if urlStr == "" {
 		return nil, errors.New("url is empty")
 	}
-	
+
 	// 解析 URL 以判断协议
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, errors.New("invalid URL format: " + err.Error())
 	}
-	
+
 	// 处理 file:// 协议
 	if parsedURL.Scheme == "file" {
 		// 去除 "file://" 前缀，得到本地文件路径
@@ -322,23 +359,23 @@ func DownloadFile(urlStr string) ([]byte, error) {
 		}
 		return data, nil
 	}
-	
+
 	client := &http.Client{}
 	resp, err := client.Get(urlStr)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, errors.New("failed to download file: " + resp.Status)
 	}
-	
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return data, nil
 }
 
@@ -349,7 +386,7 @@ func DetectAndSaveImage(data []byte) (string, error) {
 	if ext == "unknown" {
 		return "", fmt.Errorf("无法识别的图片格式")
 	}
-	
+
 	// 调用保存函数
 	return SaveImageToFile(ext, data)
 }
