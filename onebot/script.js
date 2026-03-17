@@ -1433,9 +1433,15 @@ function triggerUploadImg(receiver, md5, imagePath) {
 
     const startUploadMedia = new NativeFunction(uploadImageAddr, 'int64', ['pointer', 'pointer']);
 
+    if (uploadGlobalX0.isNull()) {
+        console.error("[!] uploadGlobalX0 为空，请先在微信里手动发送一次图片/视频以初始化上传上下文后再调用接口");
+        return "need_init_upload_context";
+    }
+
     console.log(`开始手动触发 C2C 上传 X0 ${uploadGlobalX0}, X1: ${uploadImageX1}`);
     const result = startUploadMedia(uploadGlobalX0, uploadImageX1);
     console.log("调用结果: " + result);
+    return result;
 }
 
 function triggerUploadVideo(receiver, md5, videoPath) {
@@ -1554,8 +1560,14 @@ function triggerUploadVideo(receiver, md5, videoPath) {
 
     const startUploadMedia = new NativeFunction(uploadImageAddr, 'int64', ['pointer', 'pointer']);
 
+    if (uploadGlobalX0.isNull()) {
+        console.error("[!] uploadGlobalX0 为空，请先在微信里手动发送一次图片/视频以初始化上传上下文后再调用接口");
+        return "need_init_upload_context";
+    }
+
     const result = startUploadMedia(uploadGlobalX0, uploadVideoX1);
     console.log("调用结果: " + result);
+    return result;
 }
 
 function attachUploadMedia() {
