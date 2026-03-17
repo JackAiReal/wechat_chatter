@@ -154,13 +154,13 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
 			if err != nil {
 				Error("XML解析失败", "err", err)
-				return nil, err
+				continue
 			}
 
 			path, err := GetDownloadPath(fileMsg.Image.MidImgURL, fileMsg.Image.AesKey)
 			if err != nil {
-				Error("获取文件路径失败", "err", err)
-				return nil, err
+				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
+				continue
 			}
 
 			msg.Data.URL = "file://" + path
@@ -170,12 +170,12 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
 			if err != nil {
 				Error("XML解析失败", "err", err)
-				return nil, err
+				continue
 			}
 			path, err := GetDownloadPath(fileMsg.AppMsg.AppAttach.CdnAttachURL, fileMsg.AppMsg.AppAttach.AesKey)
 			if err != nil {
-				Error("获取文件路径失败", "err", err)
-				return nil, err
+				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
+				continue
 			}
 
 			msg.Data.URL = "file://" + path
@@ -184,12 +184,12 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
 			if err != nil {
 				Error("XML解析失败", "err", err)
-				return nil, err
+				continue
 			}
 			path, err := GetDownloadPath(fileMsg.Video.CdnVideoUrl, fileMsg.Video.AesKey)
 			if err != nil {
-				Error("获取文件路径失败", "err", err)
-				return nil, err
+				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
+				continue
 			}
 
 			msg.Data.URL = "file://" + path

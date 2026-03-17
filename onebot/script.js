@@ -1822,81 +1822,149 @@ function setReceiver() {
 
     Interceptor.attach(startDownloadMedia, {
         onEnter: function (args) {
-            downloadGlobalX0 = this.context.x0;
-            var fileIDAddr = this.context.x1.add(0x40).readPointer();
-            var fileId = fileIDAddr?.readUtf8String();
-            const t = this.context.x1.add(0xA0).readU32()
-            console.log(" [+] download file: ", fileId, " type", t);
-            if (t === 3) {
-                if (fileId.endsWith("_1")) {
-                    this.context.x1.add(0xA0).writeU32(0x02);
+            try {
+                downloadGlobalX0 = this.context.x0;
+                if (!this.context.x1 || this.context.x1.isNull()) {
+                    return;
                 }
-                if (fileId.endsWith("_31")) {
-                    this.context.x1.add(0xA0).writeU32(0x04);
+
+                var fileIDAddr = this.context.x1.add(0x40).readPointer();
+                var fileId = "";
+                try {
+                    if (fileIDAddr && !fileIDAddr.isNull()) {
+                        fileId = fileIDAddr.readUtf8String() || "";
+                    }
+                } catch (e) {
+                    fileId = "";
                 }
+
+                const t = this.context.x1.add(0xA0).readU32();
+                console.log(" [+] download file: ", fileId, " type", t);
+
+                if (t === 3 && fileId) {
+                    if (fileId.endsWith("_1")) {
+                        this.context.x1.add(0xA0).writeU32(0x02);
+                    }
+                    if (fileId.endsWith("_31")) {
+                        this.context.x1.add(0xA0).writeU32(0x04);
+                    }
+                }
+            } catch (e) {
+                console.log("[-] startDownloadMedia parse error: " + e);
             }
         }
     })
 
     Interceptor.attach(downloadFileAddr, {
         onEnter: function (args) {
-            var dataPtr = this.context.x1;
-            var dataLen = this.context.x2.toInt32();
-            var fileId = this.context.sp.add(0x30).readPointer().readUtf8String();
-            var cdnUrl = this.context.x19.add(0x2F8).readPointer().readUtf8String();
+            try {
+                var dataPtr = this.context.x1;
+                var dataLen = this.context.x2.toInt32();
 
-            if (dataLen > 0) {
-                var buffer = dataPtr.readByteArray(dataLen);
-                var uint8Array = new Uint8Array(buffer);
+                var fileId = "";
+                var cdnUrl = "";
+                try {
+                    var fileIdPtr = this.context.sp.add(0x30).readPointer();
+                    if (fileIdPtr && !fileIdPtr.isNull()) {
+                        fileId = fileIdPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
+                try {
+                    var cdnPtr = this.context.x19.add(0x2F8).readPointer();
+                    if (cdnPtr && !cdnPtr.isNull()) {
+                        cdnUrl = cdnPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
 
-                send({
-                    type: "download",
-                    media: Array.from(uint8Array),
-                    file_id: fileId,
-                    cdn_url: cdnUrl,
-                })
+                if (dataLen > 0 && dataPtr && !dataPtr.isNull() && cdnUrl) {
+                    var buffer = dataPtr.readByteArray(dataLen);
+                    var uint8Array = new Uint8Array(buffer);
+
+                    send({
+                        type: "download",
+                        media: Array.from(uint8Array),
+                        file_id: fileId,
+                        cdn_url: cdnUrl,
+                    })
+                }
+            } catch (e) {
+                console.log("[-] downloadFile hook parse error: " + e);
             }
         }
     });
 
     Interceptor.attach(downloadImagAddr, {
         onEnter: function (args) {
-            var dataPtr = this.context.x1;
-            var dataLen = this.context.x2.toInt32();
-            var fileId = this.context.x19.add(0x2E0).readPointer().readUtf8String();
-            var cdnUrl = this.context.x19.add(0x2F8).readPointer().readUtf8String();
+            try {
+                var dataPtr = this.context.x1;
+                var dataLen = this.context.x2.toInt32();
 
-            if (dataLen > 0) {
-                var buffer = dataPtr.readByteArray(dataLen);
-                var uint8Array = new Uint8Array(buffer);
+                var fileId = "";
+                var cdnUrl = "";
+                try {
+                    var fileIdPtr = this.context.x19.add(0x2E0).readPointer();
+                    if (fileIdPtr && !fileIdPtr.isNull()) {
+                        fileId = fileIdPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
+                try {
+                    var cdnPtr = this.context.x19.add(0x2F8).readPointer();
+                    if (cdnPtr && !cdnPtr.isNull()) {
+                        cdnUrl = cdnPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
 
-                send({
-                    type: "download",
-                    media: Array.from(uint8Array),
-                    file_id: fileId,
-                    cdn_url: cdnUrl,
-                })
+                if (dataLen > 0 && dataPtr && !dataPtr.isNull() && cdnUrl) {
+                    var buffer = dataPtr.readByteArray(dataLen);
+                    var uint8Array = new Uint8Array(buffer);
+
+                    send({
+                        type: "download",
+                        media: Array.from(uint8Array),
+                        file_id: fileId,
+                        cdn_url: cdnUrl,
+                    })
+                }
+            } catch (e) {
+                console.log("[-] downloadImage hook parse error: " + e);
             }
         }
     });
 
     Interceptor.attach(downloadVideoAddr, {
         onEnter: function (args) {
-            var dataPtr = this.context.x1;
-            var dataLen = this.context.x2.toInt32();
-            var fileId = this.context.x22.add(0x40).readPointer().readUtf8String();
-            var cdnUrl = this.context.x22.add(0x58).readPointer().readUtf8String();
+            try {
+                var dataPtr = this.context.x1;
+                var dataLen = this.context.x2.toInt32();
 
-            if (dataLen > 0) {
-                var buffer = dataPtr.readByteArray(dataLen);
-                var uint8Array = new Uint8Array(buffer);
+                var fileId = "";
+                var cdnUrl = "";
+                try {
+                    var fileIdPtr = this.context.x22.add(0x40).readPointer();
+                    if (fileIdPtr && !fileIdPtr.isNull()) {
+                        fileId = fileIdPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
+                try {
+                    var cdnPtr = this.context.x22.add(0x58).readPointer();
+                    if (cdnPtr && !cdnPtr.isNull()) {
+                        cdnUrl = cdnPtr.readUtf8String() || "";
+                    }
+                } catch (e) {}
 
-                send({
-                    type: "download",
-                    media: Array.from(uint8Array),
-                    file_id: fileId,
-                    cdn_url: cdnUrl,
-                })
+                if (dataLen > 0 && dataPtr && !dataPtr.isNull() && cdnUrl) {
+                    var buffer = dataPtr.readByteArray(dataLen);
+                    var uint8Array = new Uint8Array(buffer);
+
+                    send({
+                        type: "download",
+                        media: Array.from(uint8Array),
+                        file_id: fileId,
+                        cdn_url: cdnUrl,
+                    })
+                }
+            } catch (e) {
+                console.log("[-] downloadVideo hook parse error: " + e);
             }
         }
     });
