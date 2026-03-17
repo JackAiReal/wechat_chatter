@@ -1,0 +1,20 @@
+{
+  "onebot_dir": "/Users/jackgong/.openclaw/workspace-idreadl/wechat_chatter/onebot",
+  "devkit_dir": "/Users/jackgong/.openclaw/workspace-idreadl/wechat_chatter/.frida-devkit",
+  "onebot_bin": "onebot",
+  "wechat_conf": "../wechat_version/4_1_7_57_mac.json",
+
+  "gadget_addr": "127.0.0.1:27042",
+  "token": "MuseBot",
+  "log_level": "info",
+  "send_interval": 1000,
+  "conn_type": "http",
+
+  "trigger_listen": "127.0.0.1:3222",
+  "onebot_internal_listen": "127.0.0.1:3223",
+
+  "callback_listen": "127.0.0.1:18888",
+  "callback_path": "/onebot",
+
+  "auto_build": true
+}
