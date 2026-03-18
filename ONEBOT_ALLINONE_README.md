@@ -12,12 +12,16 @@ cd /Users/jackgong/.openclaw/workspace-idreadl/wechat_chatter
 python3 onebot_allinone.py --config onebot_allinone.json
 ```
 
-默认端口：
+默认端口（单实例配置）：
 - 外部触发端口：`127.0.0.1:3222`
 - onebot内部端口：`127.0.0.1:3223`
 - 回调端口：`127.0.0.1:18888`
 
+> 现已支持多实例：在配置里使用 `instances` 数组可同时拉起多个 onebot（每个实例指定不同 `onebot_internal_listen`，建议指定 `wechat_pid`）。
+
 ## 便捷 API（推荐）
+
+多实例时，请在请求体里增加：`"instance": "wx1"`（实例名由配置决定）。
 
 ### 1) 发送文本
 
@@ -26,6 +30,16 @@ python3 onebot_allinone.py --config onebot_allinone.json
 ```json
 {
   "target_id": "wxid_xxx 或 123@chatroom",
+  "text": "你好"
+}
+```
+
+多实例示例：
+
+```json
+{
+  "instance": "wx1",
+  "target_id": "wxid_xxx",
   "text": "你好"
 }
 ```
@@ -76,6 +90,16 @@ python3 onebot_allinone.py --config onebot_allinone.json
 
 其中 `at_user` 也兼容写法：`all` / `@all` / `所有人` / `全体`（会自动归一化为 `notify@all`）。
 
+## 多开微信（多实例）
+
+1) 复制 `onebot_allinone.multi.example.json` 为你自己的配置文件并填写每个微信实例对应的 `wechat_pid`。
+2) 每个实例必须使用不同的 `onebot_internal_listen` 和 `callback_path`。
+3) 启动命令：
+
+```bash
+python3 onebot_allinone.py --config onebot_allinone.multi.example.json
+```
+
 ### 5) 手动下载媒体并落地
 
 `POST /api/download_media`
@@ -107,6 +131,14 @@ python3 onebot_allinone.py --config onebot_allinone.json
 - `/send_group_msg`
 - `/download_media`
 - `/ws`
+
+多实例直通（HTTP）可用前缀：
+- `/i/<instance>/send_private_msg`
+- `/i/<instance>/send_group_msg`
+- `/i/<instance>/download_media`
+
+查询能力与实例列表：
+- `GET /api/capabilities`
 
 ## 能力边界
 

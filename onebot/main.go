@@ -59,6 +59,7 @@ func initFlag() {
 	flag.StringVar(&config.WechatConf, "wechat_conf", "../wechat_version/4_1_7_57_mac.json", "微信配置文件路径: ../wechat_version/4_1_6_12_mac.json")
 	flag.StringVar(&config.ConnType, "conn_type", "http", "连接类型: http | websocket")
 	flag.IntVar(&config.SendInterval, "send_interval", 1000, "发送间隔: ms")
+	flag.IntVar(&config.WechatPID, "wechat_pid", 0, "指定微信进程 PID（多开场景建议显式传入）")
 	flag.StringVar(&logLevel, "log_level", "info", "log level")
 
 	flag.Parse()
@@ -72,6 +73,7 @@ func initFlag() {
 	fmt.Println("WechatConf", config.WechatConf)
 	fmt.Println("ConnType", config.ConnType)
 	fmt.Println("SendInterval", config.SendInterval)
+	fmt.Println("WechatPID", config.WechatPID)
 	fmt.Println("LogLevel", logLevel)
 }
 
@@ -102,9 +104,15 @@ func initFrida() {
 		Fatal("无法获取本地设备", "err", err)
 	}
 
-	pid, err := GetWeChatPID()
-	if err != nil {
-		Fatal("未发现正在运行的微信进程")
+	pid := config.WechatPID
+	if pid <= 0 {
+		var pidErr error
+		pid, pidErr = GetWeChatPID()
+		if pidErr != nil {
+			Fatal("未发现正在运行的微信进程")
+		}
+	} else {
+		Info("使用显式指定微信进程", "PID", pid)
 	}
 	Info("微信进程 PID", "PID", pid)
 

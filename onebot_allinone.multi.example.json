@@ -1,0 +1,32 @@
+{
+  "onebot_dir": "/Users/jackgong/.openclaw/workspace-idreadl/wechat_chatter/onebot",
+  "devkit_dir": "/Users/jackgong/.openclaw/workspace-idreadl/wechat_chatter/.frida-devkit",
+  "onebot_bin": "onebot",
+
+  "trigger_listen": "127.0.0.1:3222",
+  "callback_listen": "127.0.0.1:18888",
+  "auto_build": true,
+
+  "wechat_conf": "../wechat_version/4_1_7_57_mac.json",
+  "frida_type": "local",
+  "log_level": "info",
+  "send_interval": 1000,
+  "conn_type": "http",
+
+  "instances": [
+    {
+      "name": "wx1",
+      "wechat_pid": 12345,
+      "onebot_internal_listen": "127.0.0.1:3223",
+      "callback_path": "/onebot/wx1",
+      "token": "MuseBot1"
+    },
+    {
+      "name": "wx2",
+      "wechat_pid": 23456,
+      "onebot_internal_listen": "127.0.0.1:3224",
+      "callback_path": "/onebot/wx2",
+      "token": "MuseBot2"
+    }
+  ]
+}

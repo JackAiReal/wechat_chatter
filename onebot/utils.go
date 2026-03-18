@@ -346,7 +346,14 @@ func GetWeChatPID() (int, error) {
 		return 0, fmt.Errorf("未发现正在运行的微信进程")
 	}
 
-	return strconv.Atoi(strings.TrimSpace(string(output)))
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return 0, fmt.Errorf("未发现正在运行的微信进程")
+	}
+
+	// 多开场景下 pgrep 可能返回多行 PID，这里默认取第一行。
+	lines := strings.Split(text, "\n")
+	return strconv.Atoi(strings.TrimSpace(lines[0]))
 }
 
 func DownloadFile(urlStr string) ([]byte, error) {

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-OneBot all-in-one launcher (single terminal):
+OneBot all-in-one launcher:
 - starts a callback HTTP server (prints inbound callbacks)
 - starts a trigger proxy HTTP server (prints outbound API calls)
-- starts onebot process and wires send_url -> callback server
+- starts one or more onebot processes and wires send_url -> callback server
 
-Extra convenience APIs (on trigger_listen):
+Convenience APIs (on trigger_listen):
 - POST /api/send_text
 - POST /api/send_image
 - POST /api/send_video
 - POST /api/send_at
 - POST /api/download_media
 
-All other routes are proxied as-is to onebot internal server.
+Multi-instance notes:
+- Configure `instances` in JSON to launch multiple onebot workers.
+- For /api/* requests, pass `"instance": "<name>"` when multiple instances exist.
+- Non-API passthrough can target an instance with /i/<name>/... prefix.
 """
 
 from __future__ import annotations
@@ -28,9 +31,27 @@ import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
+
+
+@dataclass
+class InstanceConfig:
+    name: str
+    wechat_conf: str
+    onebot_internal_listen: str
+    callback_path: str
+
+    frida_type: str = "gadget"
+    gadget_addr: str = "127.0.0.1:27042"
+    token: str = "MuseBot"
+    log_level: str = "info"
+    send_interval: int = 1000
+    conn_type: str = "http"
+    callback_dump_jsonl: str = ""
+    wechat_pid: int = 0
 
 
 @dataclass
@@ -38,31 +59,103 @@ class Config:
     onebot_dir: str
     devkit_dir: str
     onebot_bin: str
-    wechat_conf: str
+
+    # shared listener ports
+    trigger_listen: str = "127.0.0.1:3222"
+    callback_listen: str = "127.0.0.1:18888"
+
+    auto_build: bool = True
+
+    # backward-compatible single-instance fields
+    wechat_conf: str = "../wechat_version/4_1_7_57_mac.json"
+    frida_type: str = "gadget"
     gadget_addr: str = "127.0.0.1:27042"
     token: str = "MuseBot"
     log_level: str = "info"
     send_interval: int = 1000
     conn_type: str = "http"
-
-    # External API port user calls
-    trigger_listen: str = "127.0.0.1:3222"
-    # Internal onebot API bind (proxied by trigger server)
     onebot_internal_listen: str = "127.0.0.1:3223"
-
-    # Callback server from onebot -> your local app
-    callback_listen: str = "127.0.0.1:18888"
     callback_path: str = "/onebot"
-
-    # Optional: save callback payloads as json lines
     callback_dump_jsonl: str = ""
+    wechat_pid: int = 0
 
-    auto_build: bool = True
+    # optional multi-instance config
+    instances: Optional[List[Dict[str, Any]]] = None
 
 
 def load_config(path: Path) -> Config:
     data = json.loads(path.read_text(encoding="utf-8"))
     return Config(**data)
+
+
+def build_instances(cfg: Config) -> List[InstanceConfig]:
+    if cfg.instances:
+        out: List[InstanceConfig] = []
+        for idx, raw in enumerate(cfg.instances):
+            if not isinstance(raw, dict):
+                raise ValueError(f"instances[{idx}] must be object")
+
+            name = str(raw.get("name", "")).strip() or f"inst{idx + 1}"
+            wechat_conf = str(raw.get("wechat_conf", cfg.wechat_conf)).strip()
+            onebot_internal_listen = str(raw.get("onebot_internal_listen", "")).strip()
+            if not onebot_internal_listen:
+                raise ValueError(f"instances[{idx}] missing onebot_internal_listen")
+
+            callback_path = str(raw.get("callback_path", f"/onebot/{name}")).strip()
+            if not callback_path.startswith("/"):
+                callback_path = "/" + callback_path
+
+            out.append(
+                InstanceConfig(
+                    name=name,
+                    wechat_conf=wechat_conf,
+                    onebot_internal_listen=onebot_internal_listen,
+                    callback_path=callback_path,
+                    frida_type=str(raw.get("frida_type", cfg.frida_type)).strip() or cfg.frida_type,
+                    gadget_addr=str(raw.get("gadget_addr", cfg.gadget_addr)).strip() or cfg.gadget_addr,
+                    token=str(raw.get("token", cfg.token)).strip() or cfg.token,
+                    log_level=str(raw.get("log_level", cfg.log_level)).strip() or cfg.log_level,
+                    send_interval=int(raw.get("send_interval", cfg.send_interval)),
+                    conn_type=str(raw.get("conn_type", cfg.conn_type)).strip() or cfg.conn_type,
+                    callback_dump_jsonl=str(raw.get("callback_dump_jsonl", cfg.callback_dump_jsonl)).strip(),
+                    wechat_pid=int(raw.get("wechat_pid", cfg.wechat_pid or 0)),
+                )
+            )
+    else:
+        out = [
+            InstanceConfig(
+                name="default",
+                wechat_conf=cfg.wechat_conf,
+                onebot_internal_listen=cfg.onebot_internal_listen,
+                callback_path=cfg.callback_path,
+                frida_type=cfg.frida_type,
+                gadget_addr=cfg.gadget_addr,
+                token=cfg.token,
+                log_level=cfg.log_level,
+                send_interval=cfg.send_interval,
+                conn_type=cfg.conn_type,
+                callback_dump_jsonl=cfg.callback_dump_jsonl,
+                wechat_pid=cfg.wechat_pid,
+            )
+        ]
+
+    names = set()
+    callbacks = set()
+    listens = set()
+    for inst in out:
+        if inst.name in names:
+            raise ValueError(f"duplicate instance name: {inst.name}")
+        names.add(inst.name)
+
+        if inst.callback_path in callbacks:
+            raise ValueError(f"duplicate callback_path: {inst.callback_path}")
+        callbacks.add(inst.callback_path)
+
+        if inst.onebot_internal_listen in listens:
+            raise ValueError(f"duplicate onebot_internal_listen: {inst.onebot_internal_listen}")
+        listens.add(inst.onebot_internal_listen)
+
+    return out
 
 
 def split_host_port(addr: str) -> Tuple[str, int]:
@@ -152,13 +245,39 @@ def forward_http(target_url: str, method: str, body: bytes, content_type: Option
         return 502, err, "application/json"
 
 
-def make_callback_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
+def parse_instance_hint(handler: BaseHTTPRequestHandler, body_instance: Optional[str] = None) -> Optional[str]:
+    if body_instance:
+        return body_instance
+
+    parsed = urlsplit(handler.path)
+    q = parse_qs(parsed.query)
+    if q.get("instance"):
+        return q["instance"][0]
+
+    h = handler.headers.get("X-OneBot-Instance")
+    if h:
+        return h.strip()
+
+    return None
+
+
+def make_callback_handler(instances: List[InstanceConfig]) -> type[BaseHTTPRequestHandler]:
+    inst_by_path = {i.callback_path: i for i in instances}
+
     class CallbackHandler(BaseHTTPRequestHandler):
         def do_POST(self):
+            parsed = urlsplit(self.path)
+            path_only = parsed.path
+            inst = inst_by_path.get(path_only)
+            if not inst:
+                write_json(self, 404, {"error": f"unknown callback path: {path_only}"})
+                return
+
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8", errors="ignore")
 
-            log("callback", f"{self.command} {self.path}")
+            prefix = f"callback:{inst.name}"
+            log(prefix, f"{self.command} {self.path}")
             if raw:
                 try:
                     data = json.loads(raw)
@@ -166,7 +285,7 @@ def make_callback_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                     sender = data.get("user_id")
                     gid = data.get("group_id", "")
                     text = data.get("raw_message", "")
-                    log("callback", f"message_type={mtype} sender={sender} group={gid}")
+                    log(prefix, f"message_type={mtype} sender={sender} group={gid}")
                     if text:
                         print(text, flush=True)
 
@@ -176,12 +295,12 @@ def make_callback_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                         seg_data = seg.get("data") or {}
                         url = seg_data.get("url")
                         if url:
-                            log("callback", f"media[{seg_type}] url={url}")
+                            log(prefix, f"media[{seg_type}] url={url}")
                 except Exception:
                     print(raw, flush=True)
 
-            if cfg.callback_dump_jsonl:
-                p = Path(cfg.callback_dump_jsonl)
+            if inst.callback_dump_jsonl:
+                p = Path(inst.callback_dump_jsonl)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 with p.open("a", encoding="utf-8") as f:
                     f.write(raw + "\n")
@@ -189,7 +308,18 @@ def make_callback_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
             write_json(self, 200, {"ok": True})
 
         def do_GET(self):
-            write_json(self, 200, {"ok": True, "service": "callback"})
+            if self.path == "/":
+                write_json(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "service": "callback",
+                        "paths": sorted(inst_by_path.keys()),
+                    },
+                )
+                return
+            write_json(self, 404, {"error": "not found"})
 
         def log_message(self, fmt: str, *args):
             return
@@ -197,19 +327,38 @@ def make_callback_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
     return CallbackHandler
 
 
-def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler]:
+def make_trigger_proxy_handler(instances: List[InstanceConfig]) -> type[BaseHTTPRequestHandler]:
+    inst_by_name = {i.name: i for i in instances}
+    default_inst = instances[0]
+    multi_mode = len(instances) > 1
+
+    def choose_instance(hint: Optional[str], require_explicit: bool = False) -> Tuple[Optional[InstanceConfig], Optional[str]]:
+        if hint:
+            inst = inst_by_name.get(hint)
+            if not inst:
+                return None, f"unknown instance: {hint}"
+            return inst, None
+
+        if require_explicit and multi_mode:
+            return None, "multiple instances enabled; please specify instance"
+
+        return default_inst, None
+
     class TriggerProxyHandler(BaseHTTPRequestHandler):
-        def _forward_current(self):
+        def _forward_current(self, inst: InstanceConfig, path_override: Optional[str] = None):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length) if length > 0 else b""
             content_type = self.headers.get("Content-Type", "application/json")
 
-            log("trigger", f"{self.command} {self.path}")
+            forward_path = path_override if path_override is not None else self.path
+            base = f"http://{inst.onebot_internal_listen}"
+
+            log("trigger", f"[{inst.name}] {self.command} {forward_path}")
             if body:
                 print(body.decode("utf-8", errors="ignore"), flush=True)
 
             status, resp_body, resp_ct = forward_http(
-                target_url=f"{forward_base}{self.path}",
+                target_url=f"{base}{forward_path}",
                 method=self.command,
                 body=body,
                 content_type=content_type,
@@ -219,29 +368,37 @@ def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler
             self.end_headers()
             self.wfile.write(resp_body)
 
-            log("trigger", f"-> {status} {forward_base}{self.path}")
+            log("trigger", f"[{inst.name}] -> {status} {base}{forward_path}")
             if resp_body:
                 print(resp_body.decode("utf-8", errors="ignore"), flush=True)
 
         def _handle_api(self):
             body = read_json_body(self)
+            body_instance = body.pop("instance", None)
+            inst_hint = parse_instance_hint(self, body_instance=body_instance)
+            inst, err = choose_instance(inst_hint, require_explicit=True)
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None
+
             try:
-                if self.path == "/api/send_text":
+                if self.path.startswith("/api/send_text"):
                     target_id = body.get("target_id", "")
                     text = body.get("text", "")
                     payload = build_send_payload("text", target_id=target_id, text=text)
                     route = "/send_group_msg" if target_id.endswith("@chatroom") else "/send_private_msg"
-                elif self.path == "/api/send_image":
+                elif self.path.startswith("/api/send_image"):
                     target_id = body.get("target_id", "")
                     file_value = body.get("file", "")
                     payload = build_send_payload("image", target_id=target_id, file_value=file_value)
                     route = "/send_group_msg" if target_id.endswith("@chatroom") else "/send_private_msg"
-                elif self.path == "/api/send_video":
+                elif self.path.startswith("/api/send_video"):
                     target_id = body.get("target_id", "")
                     file_value = body.get("file", "")
                     payload = build_send_payload("video", target_id=target_id, file_value=file_value)
                     route = "/send_group_msg" if target_id.endswith("@chatroom") else "/send_private_msg"
-                elif self.path == "/api/send_at":
+                elif self.path.startswith("/api/send_at"):
                     target_id = body.get("target_id", "")
                     if not target_id.endswith("@chatroom"):
                         raise ValueError("/api/send_at 仅支持群聊 target_id (xxx@chatroom)")
@@ -249,7 +406,7 @@ def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler
                     at_user = body.get("at_user", "")
                     payload = build_send_payload("at_text", target_id=target_id, text=text, at_user=at_user)
                     route = "/send_group_msg"
-                elif self.path == "/api/download_media":
+                elif self.path.startswith("/api/download_media"):
                     payload = {
                         "target_id": body.get("target_id", ""),
                         "cdn_url": body.get("cdn_url", ""),
@@ -264,10 +421,11 @@ def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler
                     write_json(self, 404, {"error": "unknown api route"})
                     return
 
-                log("trigger", f"API {self.path} -> {route}")
+                base = f"http://{inst.onebot_internal_listen}"
+                log("trigger", f"[{inst.name}] API {self.path} -> {route}")
                 data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 status, resp_body, _ = forward_http(
-                    target_url=f"{forward_base}{route}",
+                    target_url=f"{base}{route}",
                     method="POST",
                     body=data,
                     content_type="application/json",
@@ -281,14 +439,47 @@ def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler
             except Exception as e:
                 write_json(self, 400, {"error": str(e)})
 
+        def _resolve_passthrough_target(self) -> Tuple[Optional[InstanceConfig], Optional[str], Optional[str]]:
+            parsed = urlsplit(self.path)
+            path_only = parsed.path
+            query = parsed.query
+
+            # /i/<instance>/<route> passthrough
+            if path_only.startswith("/i/"):
+                parts = path_only.split("/", 3)
+                if len(parts) < 4 or not parts[2]:
+                    return None, None, "invalid instance passthrough path; expected /i/<name>/<route>"
+                inst_name = parts[2]
+                inst = inst_by_name.get(inst_name)
+                if not inst:
+                    return None, None, f"unknown instance: {inst_name}"
+                route = "/" + parts[3]
+                if query:
+                    route = route + "?" + query
+                return inst, route, None
+
+            # fallback by query/header, else default
+            hint = parse_instance_hint(self)
+            inst, err = choose_instance(hint, require_explicit=False)
+            if err:
+                return None, None, err
+            assert inst is not None
+            return inst, self.path, None
+
         def do_POST(self):
             if self.path.startswith("/api/"):
                 self._handle_api()
                 return
-            self._forward_current()
+
+            inst, route, err = self._resolve_passthrough_target()
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None and route is not None
+            self._forward_current(inst, path_override=route)
 
         def do_GET(self):
-            if self.path == "/api/capabilities":
+            if self.path.startswith("/api/capabilities"):
                 write_json(
                     self,
                     200,
@@ -306,20 +497,55 @@ def make_trigger_proxy_handler(forward_base: str) -> type[BaseHTTPRequestHandler
                             "/send_group_msg",
                             "/download_media",
                             "/ws",
+                            "/i/<instance>/*",
                         ],
+                        "instances": [
+                            {
+                                "name": i.name,
+                                "onebot_internal_listen": i.onebot_internal_listen,
+                                "callback_path": i.callback_path,
+                                "wechat_pid": i.wechat_pid,
+                            }
+                            for i in instances
+                        ],
+                        "api_usage": {
+                            "when_multi_instance": "POST /api/* body add {\"instance\":\"<name>\"}",
+                            "passthrough": "prefix path with /i/<name>/...",
+                        },
                     },
                 )
                 return
-            self._forward_current()
+
+            inst, route, err = self._resolve_passthrough_target()
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None and route is not None
+            self._forward_current(inst, path_override=route)
 
         def do_PUT(self):
-            self._forward_current()
+            inst, route, err = self._resolve_passthrough_target()
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None and route is not None
+            self._forward_current(inst, path_override=route)
 
         def do_PATCH(self):
-            self._forward_current()
+            inst, route, err = self._resolve_passthrough_target()
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None and route is not None
+            self._forward_current(inst, path_override=route)
 
         def do_DELETE(self):
-            self._forward_current()
+            inst, route, err = self._resolve_passthrough_target()
+            if err:
+                write_json(self, 400, {"error": err})
+                return
+            assert inst is not None and route is not None
+            self._forward_current(inst, path_override=route)
 
         def log_message(self, fmt: str, *args):
             return
@@ -355,61 +581,109 @@ def ensure_onebot_binary(cfg: Config):
     log("build", "onebot build done")
 
 
-def run_onebot(cfg: Config) -> int:
-    callback_url = f"http://{cfg.callback_listen}{cfg.callback_path}"
+def build_onebot_cmd(cfg: Config, inst: InstanceConfig) -> List[str]:
     cmd = [
         str((Path(cfg.onebot_dir) / cfg.onebot_bin).resolve()),
-        "-type=gadget",
-        f"-gadget_addr={cfg.gadget_addr}",
-        f"-wechat_conf={cfg.wechat_conf}",
-        f"-conn_type={cfg.conn_type}",
-        f"-receive_host={cfg.onebot_internal_listen}",
-        f"-send_url={callback_url}",
-        f"-token={cfg.token}",
-        f"-send_interval={cfg.send_interval}",
-        f"-log_level={cfg.log_level}",
+        f"-type={inst.frida_type}",
+        f"-gadget_addr={inst.gadget_addr}",
+        f"-wechat_conf={inst.wechat_conf}",
+        f"-conn_type={inst.conn_type}",
+        f"-receive_host={inst.onebot_internal_listen}",
+        f"-send_url=http://{cfg.callback_listen}{inst.callback_path}",
+        f"-token={inst.token}",
+        f"-send_interval={inst.send_interval}",
+        f"-log_level={inst.log_level}",
     ]
+    if inst.wechat_pid > 0:
+        cmd.append(f"-wechat_pid={inst.wechat_pid}")
+    return cmd
 
+
+def run_onebots(cfg: Config, instances: List[InstanceConfig]) -> int:
     env = os.environ.copy()
     env["CGO_CFLAGS"] = f"-I{cfg.devkit_dir}"
     env["CGO_LDFLAGS"] = f"-L{cfg.devkit_dir}"
 
-    log("onebot", "starting:")
-    print(" ".join(cmd), flush=True)
+    procs: Dict[str, subprocess.Popen[str]] = {}
+    rcs: Dict[str, int] = {}
+    stopped = {"yes": False}
 
-    proc = subprocess.Popen(
-        cmd,
-        cwd=cfg.onebot_dir,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    def pump_stdout(name: str, proc: subprocess.Popen[str]):
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(f"[onebot:{name}] {line.rstrip()}", flush=True)
 
-    stop_flag = {"stop": False}
+    def stop_all():
+        if stopped["yes"]:
+            return
+        stopped["yes"] = True
+        log("main", "stopping all onebot instances...")
+        for n, p in procs.items():
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                    log("main", f"terminate sent -> {n}")
+                except Exception:
+                    pass
 
     def handle_sig(_sig, _frame):
-        if stop_flag["stop"]:
-            return
-        stop_flag["stop"] = True
-        log("main", "stopping...")
-        try:
-            proc.terminate()
-        except Exception:
-            pass
+        stop_all()
 
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
-    assert proc.stdout is not None
+    for inst in instances:
+        cmd = build_onebot_cmd(cfg, inst)
+        log("onebot", f"[{inst.name}] starting:")
+        print(" ".join(cmd), flush=True)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cfg.onebot_dir,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        procs[inst.name] = proc
+        t = threading.Thread(target=pump_stdout, args=(inst.name, proc), daemon=True)
+        t.start()
+
     try:
-        for line in proc.stdout:
-            print(f"[onebot] {line.rstrip()}", flush=True)
+        while len(rcs) < len(procs):
+            for name, proc in procs.items():
+                if name in rcs:
+                    continue
+                rc = proc.poll()
+                if rc is not None:
+                    rcs[name] = rc
+                    log("onebot", f"[{name}] exited with code {rc}")
+
+            if stopped["yes"]:
+                # give children time to quit
+                for name, proc in procs.items():
+                    if name in rcs:
+                        continue
+                    rc = proc.poll()
+                    if rc is None:
+                        try:
+                            proc.wait(timeout=1.5)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                    rc = proc.poll()
+                    if rc is not None:
+                        rcs[name] = rc
+
+            time.sleep(0.2)
     finally:
-        rc = proc.wait()
-        log("onebot", f"exited with code {rc}")
-    return rc
+        stop_all()
+
+    if not rcs:
+        return 1
+    return max(rcs.values())
 
 
 def main():
@@ -418,22 +692,24 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
+    instances = build_instances(cfg)
 
     ensure_onebot_binary(cfg)
 
-    callback_server = start_server(cfg.callback_listen, make_callback_handler(cfg), "callback")
-    proxy_server = start_server(
-        cfg.trigger_listen,
-        make_trigger_proxy_handler(f"http://{cfg.onebot_internal_listen}"),
-        "trigger",
-    )
+    callback_server = start_server(cfg.callback_listen, make_callback_handler(instances), "callback")
+    proxy_server = start_server(cfg.trigger_listen, make_trigger_proxy_handler(instances), "trigger")
 
     log("main", f"send HTTP to: http://{cfg.trigger_listen}")
-    log("main", f"onebot callback target: http://{cfg.callback_listen}{cfg.callback_path}")
+    log("main", f"callback listen: http://{cfg.callback_listen}")
+    for inst in instances:
+        log(
+            "main",
+            f"instance={inst.name} onebot={inst.onebot_internal_listen} callback_path={inst.callback_path} wechat_pid={inst.wechat_pid}",
+        )
     log("main", "convenience APIs: /api/send_text /api/send_image /api/send_video /api/send_at /api/download_media")
 
     try:
-        rc = run_onebot(cfg)
+        rc = run_onebots(cfg, instances)
     finally:
         callback_server.shutdown()
         proxy_server.shutdown()
