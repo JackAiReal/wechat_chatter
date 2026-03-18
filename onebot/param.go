@@ -96,6 +96,14 @@ type SendRequestData struct {
 	URL   string `json:"url,omitempty"`
 	QQ    string `json:"qq,omitempty"`
 	Media []byte `json:"media,omitempty"`
+
+	// 回调侧补充的结构化字段（发送接口不依赖这些字段）
+	FileName string `json:"file_name,omitempty"`
+	FileExt  string `json:"file_ext,omitempty"`
+	FileSize int64  `json:"file_size,omitempty"`
+	CdnURL   string `json:"cdn_url,omitempty"`
+	AesKey   string `json:"aes_key,omitempty"`
+	MD5      string `json:"md5,omitempty"`
 }
 
 type Config struct {

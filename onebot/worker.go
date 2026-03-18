@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -213,6 +214,107 @@ func scheduleAutoDownloadAndNotify(meta *WechatMessage, cdnURL, aesKey, targetID
 	}()
 }
 
+func extractXMLPayload(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	if idx := strings.Index(text, "<?xml"); idx >= 0 {
+		return strings.TrimSpace(text[idx:])
+	}
+	if idx := strings.Index(text, "<msg"); idx >= 0 {
+		return strings.TrimSpace(text[idx:])
+	}
+	return ""
+}
+
+func parseFileMsgFromText(raw string) (*FileMsg, error) {
+	xmlText := extractXMLPayload(raw)
+	if xmlText == "" {
+		return nil, errors.New("not xml")
+	}
+
+	var fileMsg FileMsg
+	if err := xml.Unmarshal([]byte(xmlText), &fileMsg); err != nil {
+		return nil, err
+	}
+
+	if strings.TrimSpace(fileMsg.AppMsg.Type) == "" &&
+		strings.TrimSpace(fileMsg.AppMsg.Title) == "" &&
+		strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL) == "" &&
+		strings.TrimSpace(fileMsg.Image.MidImgURL) == "" &&
+		strings.TrimSpace(fileMsg.Video.CdnVideoUrl) == "" &&
+		strings.TrimSpace(fileMsg.Emoji.ThumbUrl) == "" {
+		return nil, errors.New("empty appmsg")
+	}
+
+	return &fileMsg, nil
+}
+
+func applyStructuredFileData(msg *Message, fileMsg *FileMsg) {
+	if msg == nil {
+		return
+	}
+	if msg.Data == nil {
+		msg.Data = &SendRequestData{}
+	}
+
+	fileName := strings.TrimSpace(fileMsg.AppMsg.Title)
+	fileExt := strings.TrimSpace(fileMsg.AppMsg.AppAttach.FileExt)
+	cdnURL := strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL)
+	aesKey := strings.TrimSpace(fileMsg.AppMsg.AppAttach.AesKey)
+	md5Str := strings.TrimSpace(fileMsg.AppMsg.MD5)
+
+	msg.Type = "file"
+	msg.Data.Text = fileName
+	msg.Data.FileName = fileName
+	msg.Data.FileExt = fileExt
+	msg.Data.CdnURL = cdnURL
+	msg.Data.AesKey = aesKey
+	msg.Data.MD5 = md5Str
+
+	if sz, err := strconv.ParseInt(strings.TrimSpace(fileMsg.AppMsg.AppAttach.TotalLen), 10, 64); err == nil {
+		msg.Data.FileSize = sz
+	}
+}
+
+func compactXMLFields(m *WechatMessage) {
+	if m == nil {
+		return
+	}
+
+	if strings.Contains(m.RawMessage, "<msg") || strings.Contains(m.RawMessage, "<?xml") {
+		summary := "[xml omitted]"
+		for _, msg := range m.Message {
+			if msg == nil || msg.Data == nil {
+				continue
+			}
+			if msg.Type == "file" && msg.Data.FileName != "" {
+				summary = "[file] " + msg.Data.FileName
+				break
+			}
+			if msg.Type == "image" || msg.Type == "video" || msg.Type == "face" {
+				summary = "[" + msg.Type + "]"
+				break
+			}
+		}
+		m.RawMessage = summary
+	}
+
+	for _, msg := range m.Message {
+		if msg == nil || msg.Data == nil {
+			continue
+		}
+		if strings.Contains(msg.Data.Text, "<msg") || strings.Contains(msg.Data.Text, "<?xml") {
+			if msg.Type == "file" && msg.Data.FileName != "" {
+				msg.Data.Text = msg.Data.FileName
+			} else {
+				msg.Data.Text = "[xml omitted]"
+			}
+		}
+	}
+}
+
 func HandleMsg(jsonData []byte) ([]byte, error) {
 	m := new(WechatMessage)
 	err := json.Unmarshal(jsonData, m)
@@ -221,12 +323,38 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 		return nil, err
 	}
 	myWechatId = m.SelfID
-	if m.GroupId != "" {
+	if m.GroupId != "" && m.Sender != nil {
 		userID2NicknameMap.Store(m.GroupId+"_"+m.UserID, m.Sender.Nickname)
 	}
 
 	for _, msg := range m.Message {
+		if msg == nil || msg.Data == nil {
+			continue
+		}
+
 		switch msg.Type {
+		case "text":
+			fileMsg, parseErr := parseFileMsgFromText(msg.Data.Text)
+			if parseErr != nil {
+				continue
+			}
+
+			appType := strings.TrimSpace(fileMsg.AppMsg.Type)
+			if appType != "6" && appType != "74" && strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL) == "" {
+				continue
+			}
+
+			applyStructuredFileData(msg, fileMsg)
+			fileName := strings.TrimSpace(fileMsg.AppMsg.Title)
+			cdnURL := strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL)
+			aesKey := strings.TrimSpace(fileMsg.AppMsg.AppAttach.AesKey)
+
+			targetID := m.UserID
+			if m.GroupId != "" {
+				targetID = m.GroupId
+			}
+			scheduleAutoDownloadAndNotify(m, cdnURL, aesKey, targetID, fileName, 5)
+
 		case "record":
 			path, err := SaveAudioFile(msg.Data.Media)
 			if err != nil {
@@ -235,61 +363,76 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 			}
 			msg.Data.URL = "file://" + path
 			msg.Data.Media = nil
+			msg.Data.Text = "[voice]"
+
 		case "image":
-			var fileMsg FileMsg
-			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
-			if err != nil {
-				Error("XML解析失败", "err", err)
+			fileMsg, parseErr := parseFileMsgFromText(msg.Data.Text)
+			if parseErr != nil {
+				Error("XML解析失败", "err", parseErr)
 				continue
 			}
+
+			msg.Data.CdnURL = strings.TrimSpace(fileMsg.Image.MidImgURL)
+			msg.Data.AesKey = strings.TrimSpace(fileMsg.Image.AesKey)
+			msg.Data.MD5 = strings.TrimSpace(fileMsg.Image.Md5)
+			msg.Data.Text = "[image]"
 
 			path, err := GetDownloadPath(fileMsg.Image.MidImgURL, fileMsg.Image.AesKey)
 			if err != nil {
 				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
 				continue
 			}
-
 			msg.Data.URL = "file://" + path
 
 		case "file":
-			var fileMsg FileMsg
-			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
-			if err != nil {
-				Error("XML解析失败", "err", err)
+			fileMsg, parseErr := parseFileMsgFromText(msg.Data.Text)
+			if parseErr != nil {
+				Error("XML解析失败", "err", parseErr)
 				continue
 			}
 
+			applyStructuredFileData(msg, fileMsg)
+			fileName := strings.TrimSpace(fileMsg.AppMsg.Title)
 			cdnURL := strings.TrimSpace(fileMsg.AppMsg.AppAttach.CdnAttachURL)
 			aesKey := strings.TrimSpace(fileMsg.AppMsg.AppAttach.AesKey)
-			fileName := strings.TrimSpace(fileMsg.AppMsg.Title)
 
-			// 先保留原始消息回调，再异步下载并发送二次状态回调
 			targetID := m.UserID
 			if m.GroupId != "" {
 				targetID = m.GroupId
 			}
 			scheduleAutoDownloadAndNotify(m, cdnURL, aesKey, targetID, fileName, 5)
+
 		case "video":
-			var fileMsg FileMsg
-			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
-			if err != nil {
-				Error("XML解析失败", "err", err)
+			fileMsg, parseErr := parseFileMsgFromText(msg.Data.Text)
+			if parseErr != nil {
+				Error("XML解析失败", "err", parseErr)
 				continue
 			}
+
+			msg.Data.CdnURL = strings.TrimSpace(fileMsg.Video.CdnVideoUrl)
+			msg.Data.AesKey = strings.TrimSpace(fileMsg.Video.AesKey)
+			msg.Data.MD5 = strings.TrimSpace(fileMsg.Video.Md5)
+			msg.Data.FileSize = fileMsg.Video.Length
+			msg.Data.Text = "[video]"
+
 			path, err := GetDownloadPath(fileMsg.Video.CdnVideoUrl, fileMsg.Video.AesKey)
 			if err != nil {
 				Error("获取文件路径失败(保留原消息继续回调)", "err", err)
 				continue
 			}
-
 			msg.Data.URL = "file://" + path
+
 		case "face":
-			var fileMsg FileMsg
-			err = xml.Unmarshal([]byte(msg.Data.Text), &fileMsg)
-			if err != nil {
-				Error("XML解析失败", "err", err)
-				return nil, err
+			fileMsg, parseErr := parseFileMsgFromText(msg.Data.Text)
+			if parseErr != nil {
+				Error("XML解析失败", "err", parseErr)
+				return nil, parseErr
 			}
+
+			msg.Data.CdnURL = strings.TrimSpace(fileMsg.Emoji.ThumbUrl)
+			msg.Data.AesKey = strings.TrimSpace(fileMsg.Emoji.AesKey)
+			msg.Data.MD5 = strings.TrimSpace(fileMsg.Emoji.Md5)
+			msg.Data.Text = "[face]"
 
 			data, err := DownloadFile(fileMsg.Emoji.ThumbUrl)
 			if err != nil {
@@ -302,10 +445,11 @@ func HandleMsg(jsonData []byte) ([]byte, error) {
 				Error("保存表情失败", "err", err)
 				return nil, err
 			}
-
 			msg.Data.URL = "file://" + path
 		}
 	}
+
+	compactXMLFields(m)
 	return json.Marshal(m)
 }
 
