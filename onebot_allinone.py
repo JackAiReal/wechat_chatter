@@ -84,6 +84,18 @@ def infer_target_fields(target_id: str) -> Dict[str, str]:
     return {"user_id": target_id}
 
 
+def normalize_at_user(one: str) -> str:
+    v = one.strip()
+    if not v:
+        return ""
+
+    lowered = v.lower()
+    if lowered in ("all", "@all", "notify@all", "所有人", "全体"):
+        return "notify@all"
+
+    return v
+
+
 def build_send_payload(msg_type: str, target_id: str, text: str = "", file_value: str = "", at_user: str = "") -> Dict[str, Any]:
     payload: Dict[str, Any] = {**infer_target_fields(target_id), "message": []}
 
@@ -94,7 +106,9 @@ def build_send_payload(msg_type: str, target_id: str, text: str = "", file_value
     elif msg_type == "at_text":
         if at_user:
             for one in [x.strip() for x in at_user.split(",") if x.strip()]:
-                payload["message"].append({"type": "at", "data": {"qq": one}})
+                normalized = normalize_at_user(one)
+                if normalized:
+                    payload["message"].append({"type": "at", "data": {"qq": normalized}})
         if text:
             payload["message"].append({"type": "text", "data": {"text": text}})
     else:

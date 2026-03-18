@@ -43,6 +43,21 @@ curl -i -X POST \
 
 ```
 
+### 群聊 @所有人
+
+在 `send_group_msg` 的 `message` 里加入：
+
+```json
+{
+  "type": "at",
+  "data": {
+    "qq": "notify@all"
+  }
+}
+```
+
+随后再跟一个 `text` 段即可，程序会自动拼接 `@所有人` 并注入 `atuserlist=notify@all`。
+
 ## 接入openclaw
 ```
 # 进入插件目录

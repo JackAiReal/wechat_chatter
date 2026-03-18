@@ -64,6 +64,18 @@ python3 onebot_allinone.py --config onebot_allinone.json
 }
 ```
 
+支持 `@所有人`：
+
+```json
+{
+  "target_id": "123@chatroom",
+  "at_user": "notify@all",
+  "text": "请大家看公告"
+}
+```
+
+其中 `at_user` 也兼容写法：`all` / `@all` / `所有人` / `全体`（会自动归一化为 `notify@all`）。
+
 ### 5) 手动下载媒体并落地
 
 `POST /api/download_media`

@@ -22,6 +22,18 @@ import (
 	"github.com/wdvxdr1123/go-silk"
 )
 
+func normalizeAtQQ(v string) string {
+	t := strings.TrimSpace(v)
+	if t == "" {
+		return ""
+	}
+	lowered := strings.ToLower(t)
+	if lowered == "all" || lowered == "@all" || lowered == "notify@all" || t == "所有人" || t == "全体" {
+		return "notify@all"
+	}
+	return t
+}
+
 func SaveBase64Image(mediaInput string) (string, string, error) {
 	if mediaInput == "" {
 		return "", "", fmt.Errorf("media input is empty")
