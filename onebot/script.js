@@ -1974,6 +1974,11 @@ setImmediate(setReceiver)
 
 // fileType:  HdImage => 1,Image => 2, thumbImage => 3, Video => 4, File => 5,
 function triggerDownload(receiver, cdnUrl, aesKey, filePath, fileType) {
+    if (!downloadGlobalX0 || (downloadGlobalX0.isNull && downloadGlobalX0.isNull())) {
+        console.log("DownloadMedia x0 not initialized, need_init_download_context");
+        return "need_init_download_context";
+    }
+
     const downloadMediaPayload = [
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 0x00
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

@@ -99,6 +99,8 @@ python3 onebot_allinone.py --config onebot_allinone.json
 
 不传 `file_path` 会自动写到 onebot 目录下 `file/manual_download/`。
 
+> 若日志出现 `need_init_download_context` / `expected a pointer`，请先在微信客户端里手动点开一次图片或文件，初始化下载上下文后再重试。
+
 ## 原生 onebot 接口（仍可用）
 
 - `/send_private_msg`

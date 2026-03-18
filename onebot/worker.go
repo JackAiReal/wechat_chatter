@@ -113,6 +113,15 @@ func SendWechatMsg(m *SendMsg) {
 	case "download":
 		result := fridaScript.ExportsCall("triggerDownload", targetId, m.FIleCdnUrl, m.AesKey, m.FilePath, m.FileType)
 		Info("📩 下载任务执行结果", "result", result, "task_id", currTaskId, "wechat_id", myWechatId, "target_id", targetId)
+
+		resultStr := strings.ToLower(fmt.Sprintf("%v", result))
+		if strings.Contains(resultStr, "need_init_download_context") {
+			Error("下载上下文未初始化，请先在微信里手动点开一次图片/文件后重试", "task_id", currTaskId, "target_id", targetId)
+			waitForFinish = false
+		} else if strings.Contains(resultStr, "expected a pointer") || strings.Contains(resultStr, "access violation") {
+			Error("下载调用异常，本次跳过等待完成信号", "task_id", currTaskId, "target_id", targetId, "result", result)
+			waitForFinish = false
+		}
 	}
 
 	if !waitForFinish {
