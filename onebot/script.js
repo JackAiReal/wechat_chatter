@@ -1974,9 +1974,16 @@ setImmediate(setReceiver)
 
 // fileType:  HdImage => 1,Image => 2, thumbImage => 3, Video => 4, File => 5,
 function triggerDownload(receiver, cdnUrl, aesKey, filePath, fileType) {
-    if (!downloadGlobalX0 || (downloadGlobalX0.isNull && downloadGlobalX0.isNull())) {
-        console.log("DownloadMedia x0 not initialized, need_init_download_context");
-        return "need_init_download_context";
+    var x0ForDownload = downloadGlobalX0;
+    if (!x0ForDownload || (x0ForDownload.isNull && x0ForDownload.isNull())) {
+        // 兜底：复用发送链路捕获到的 x0（部分版本可用）
+        if (triggerX0 && !(triggerX0.isNull && triggerX0.isNull())) {
+            x0ForDownload = triggerX0;
+            console.log("DownloadMedia x0 fallback to triggerX0: " + x0ForDownload);
+        } else {
+            console.log("DownloadMedia x0 not initialized, need_init_download_context");
+            return "need_init_download_context";
+        }
     }
 
     const downloadMediaPayload = [
@@ -2126,7 +2133,7 @@ function triggerDownload(receiver, cdnUrl, aesKey, filePath, fileType) {
     downloadFileX1.add(0xa0).writeU32(fileType);
 
     const startDwMedia = new NativeFunction(startDownloadMedia, 'int64', ['pointer', 'pointer']);
-    const result = startDwMedia(downloadGlobalX0, downloadFileX1);
+    const result = startDwMedia(x0ForDownload, downloadFileX1);
 
     console.log("下载调用结果: " + result);
     return result;
