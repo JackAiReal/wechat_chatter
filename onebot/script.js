@@ -5,6 +5,455 @@ if (!baseAddr) {
 }
 console.log("[+] WeChat base address: " + baseAddr);
 
+// -------------------------数据库监控分区-------------------------
+var dbHookInstalled = false;
+var dbHandleToPath = {};
+
+function safeReadUtf8(ptr) {
+    try {
+        if (!ptr || ptr.isNull()) return "";
+        return ptr.readUtf8String() || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+function safeReadUtf8N(ptr, n) {
+    try {
+        if (!ptr || ptr.isNull()) return "";
+        return ptr.readUtf8String(n) || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+function safeReadUtf16(ptr) {
+    try {
+        if (!ptr || ptr.isNull()) return "";
+        return ptr.readUtf16String() || "";
+    } catch (e) {
+        return "";
+    }
+}
+
+function ptrToKey(ptr) {
+    try {
+        if (!ptr || ptr.isNull()) return "";
+        return ptr.toString();
+    } catch (e) {
+        return "";
+    }
+}
+
+function wantDbPath(path) {
+    if (!path) return false;
+    return path.indexOf('contact.db') !== -1 ||
+        path.indexOf('session.db') !== -1 ||
+        path.indexOf('general.db') !== -1 ||
+        path.indexOf('contact_fts.db') !== -1;
+}
+
+function wantSql(sql) {
+    if (!sql) return false;
+    const lowered = sql.toLowerCase();
+    return lowered.indexOf('chatroom') !== -1 ||
+        lowered.indexOf('contact') !== -1 ||
+        lowered.indexOf('member') !== -1 ||
+        lowered.indexOf('nickname') !== -1 ||
+        lowered.indexOf('displayname') !== -1 ||
+        lowered.indexOf('display_name') !== -1 ||
+        lowered.indexOf('remark') !== -1 ||
+        lowered.indexOf('roomdata') !== -1 ||
+        lowered.indexOf('room_data') !== -1;
+}
+
+var dbSymbolLookupBuilt = false;
+var dbSymbolLookup = {};
+
+function addSymbolAlias(symName, rec) {
+    if (!symName) return;
+    if (!dbSymbolLookup[symName]) {
+        dbSymbolLookup[symName] = rec;
+    }
+}
+
+function buildDbSymbolLookup() {
+    if (dbSymbolLookupBuilt) return;
+    dbSymbolLookupBuilt = true;
+
+    const mods = Process.enumerateModules().filter(m => /wechat|wcdb|sql|cipher/i.test(m.name));
+    for (let i = 0; i < mods.length; i++) {
+        const mod = mods[i];
+        let syms = [];
+        try {
+            syms = Module.enumerateSymbolsSync(mod.name) || [];
+        } catch (e) {
+            continue;
+        }
+
+        let hit = 0;
+        for (let j = 0; j < syms.length; j++) {
+            const s = syms[j];
+            const n = (s && s.name) ? s.name : '';
+            if (!n || !/sqlite|wcdb|cipher/i.test(n)) continue;
+            hit++;
+
+            const rec = {name: n, ptr: s.address, mod: mod.name};
+            addSymbolAlias(n, rec);
+            if (n[0] === '_') {
+                addSymbolAlias(n.substring(1), rec);
+            }
+        }
+
+        if (hit > 0) {
+            console.log('[DBHOOK] symbol candidates in ' + mod.name + ': ' + hit);
+        }
+    }
+}
+
+function findExportMulti(names) {
+    // 1) global exports
+    for (let i = 0; i < names.length; i++) {
+        const candidates = [names[i], '_' + names[i]];
+        for (let c = 0; c < candidates.length; c++) {
+            try {
+                const p = Module.findExportByName(null, candidates[c]);
+                if (p) {
+                    return {name: names[i], ptr: p, mod: '<global-export>'};
+                }
+            } catch (e) {}
+        }
+    }
+
+    // 2) per-module exports
+    const mods = Process.enumerateModules().filter(m => /wechat|wcdb|sql|cipher/i.test(m.name));
+    for (let i = 0; i < mods.length; i++) {
+        for (let j = 0; j < names.length; j++) {
+            const candidates = [names[j], '_' + names[j]];
+            for (let c = 0; c < candidates.length; c++) {
+                try {
+                    const p = Module.findExportByName(mods[i].name, candidates[c]);
+                    if (p) {
+                        return {name: names[j], ptr: p, mod: mods[i].name + ' (export)'};
+                    }
+                } catch (e) {}
+            }
+        }
+    }
+
+    // 3) non-exported symbols
+    buildDbSymbolLookup();
+    for (let i = 0; i < names.length; i++) {
+        const direct = dbSymbolLookup[names[i]] || dbSymbolLookup['_' + names[i]];
+        if (direct) {
+            return {name: names[i], ptr: direct.ptr, mod: direct.mod + ' (symbol:' + direct.name + ')'};
+        }
+    }
+
+    return null;
+}
+
+function logSymbolPattern(pattern, limit) {
+    buildDbSymbolLookup();
+    let c = 0;
+    const re = new RegExp(pattern, 'i');
+    for (const k in dbSymbolLookup) {
+        if (!dbSymbolLookup.hasOwnProperty(k)) continue;
+        if (!re.test(k)) continue;
+        const rec = dbSymbolLookup[k];
+        console.log('[DBHOOK][sym] ' + k + ' @ ' + rec.ptr + ' mod=' + rec.mod);
+        c++;
+        if (c >= limit) break;
+    }
+    if (c === 0) {
+        console.log('[DBHOOK][sym] no match for /' + pattern + '/i');
+    }
+}
+
+function probeObjcDbClasses() {
+    if (typeof ObjC === 'undefined' || !ObjC || !ObjC.available) {
+        console.log('[DBHOOK][objc] ObjC api not available in this runtime');
+        return;
+    }
+
+    const classNames = Object.keys(ObjC.classes || {}).filter(n => /wcdb|wct|sqlite|sql|database|db/i.test(n));
+    console.log('[DBHOOK][objc] candidate classes=' + classNames.length);
+
+    const maxClassLog = 80;
+    for (let i = 0; i < classNames.length && i < maxClassLog; i++) {
+        const clsName = classNames[i];
+        console.log('[DBHOOK][objc][class] ' + clsName);
+
+        if (i >= 12) continue; // 只展开前几个类的方法，避免刷屏
+
+        try {
+            const methods = ObjC.classes[clsName].$methods || [];
+            let mCount = 0;
+            for (let j = 0; j < methods.length; j++) {
+                const m = methods[j];
+                if (!/sql|exec|query|prepare|open|key|cipher|contact|chatroom|member|nick|display|remark/i.test(m)) continue;
+                console.log('[DBHOOK][objc][method] ' + clsName + ' :: ' + m);
+                mCount++;
+                if (mCount >= 30) break;
+            }
+        } catch (e) {
+            console.log('[DBHOOK][objc][err] ' + clsName + ' ' + e);
+        }
+    }
+}
+
+function probeDebugFunctions() {
+    if (typeof DebugSymbol === 'undefined' || !DebugSymbol || !DebugSymbol.findFunctionsMatching) {
+        console.log('[DBHOOK][debug] DebugSymbol.findFunctionsMatching unavailable');
+        return;
+    }
+
+    // 只用微信相关关键字，避免像 *Contact* 这种匹配系统库太重
+    const pats = [
+        '*GetChatRoom*',
+        '*BatchGetChatRoom*',
+        '*GetChatRoomShow*',
+        '*GetContactShow*',
+        '*CoGetContact*',
+        '*QueryContactInfo*',
+        '*chatroom_member*',
+        '*UpdateChatRoom*',
+        '*SyncSimpleChatro*',
+        '*chatroom_manager*'
+    ];
+
+    for (let i = 0; i < pats.length; i++) {
+        const p = pats[i];
+        let addrs = [];
+        try {
+            addrs = DebugSymbol.findFunctionsMatching(p) || [];
+        } catch (e) {
+            console.log('[DBHOOK][debug][err] pattern=' + p + ' ' + e);
+            continue;
+        }
+
+        console.log('[DBHOOK][debug] pattern=' + p + ' hits=' + addrs.length);
+        for (let j = 0; j < addrs.length && j < 30; j++) {
+            try {
+                const ds = DebugSymbol.fromAddress(addrs[j]);
+                const n = ds && ds.name ? ds.name : '<unknown>';
+                console.log('[DBHOOK][debug][fn] ' + n + ' @ ' + addrs[j]);
+            } catch (e) {}
+        }
+    }
+}
+
+function scanMemoryForDbKeyStrings() {
+    try {
+        const knownSalts = {
+            '1711e401bd9a0a55621c52b9be7fa904': 'favorite/favorite.db',
+            '34b0a3a1f2cc3aed6eed1495c332b0ce': 'message/message_fts.db',
+            '4e6d4682d6a731dca7e5c7e4c206d145': 'session/session.db',
+            '4fcacda9c91457fabf5c10d0a3226580': 'sns/sns.db',
+            '87bab19d2b59a53eb31550b66fcef5b4': 'bizchat/bizchat.db',
+            '896585d45f27ebd4222f475fb58280d5': 'general/general.db',
+            '8d92e808ab0fe8ac3c4c34078217217a': 'solitaire/solitaire.db',
+            '908712c862905aa697721649df304b4f': 'emoticon/emoticon.db',
+            'a55b6e0c9e2c66e0cae28f5cd8efb2a0': 'contact/contact.db',
+            'abfc414debeb9a068f6f6cf1a6a87f66': 'favorite/favorite_fts.db',
+            'c6bcc2f103e3cfa19f328720caa718fa': 'message/biz_message_0.db',
+            'c8b563b2e2a8c83a7c918ad8b0a2ae0f': 'contact/contact_fts.db',
+            'd0915f92fd2f242cc3b15e3fe4a304d4': 'hardlink/hardlink.db',
+            'd6a2fead6e67ed456e821661b51b7998': 'message/message_0.db',
+            'fd78fa4f2c8e43c26b802f4a02f4ec66': 'head_image/head_image.db',
+            'ffdef969d343295e7a76f40432fd944b': 'message/message_resource.db'
+        };
+
+        function isHexByte(v) {
+            return (v >= 0x30 && v <= 0x39) || (v >= 0x41 && v <= 0x46) || (v >= 0x61 && v <= 0x66);
+        }
+
+        let ranges = [];
+        if (Process.enumerateRangesSync) {
+            ranges = Process.enumerateRangesSync('rw-') || [];
+        } else if (Process.enumerateRanges) {
+            ranges = Process.enumerateRanges('rw-') || [];
+        }
+
+        const found = {};
+        let scannedRanges = 0;
+        let scannedBytes = 0;
+        const maxRanges = 80;
+        const maxBytes = 96 * 1024 * 1024;
+
+        for (let i = 0; i < ranges.length; i++) {
+            const r = ranges[i];
+            const size = Number(r.size);
+            if (size <= 0) continue;
+            if (size > 2 * 1024 * 1024) continue; // 降低阻塞风险
+            if (scannedRanges >= maxRanges || scannedBytes >= maxBytes) break;
+
+            let buf = null;
+            try {
+                buf = Memory.readByteArray(r.base, size);
+            } catch (e) {
+                continue;
+            }
+            if (!buf) continue;
+
+            const u8 = new Uint8Array(buf);
+            scannedRanges++;
+            scannedBytes += size;
+
+            // 匹配 x' + 96个hex + '
+            for (let p = 0; p + 98 <= u8.length; p++) {
+                if (u8[p] !== 0x78 || u8[p + 1] !== 0x27 || u8[p + 98 - 1] !== 0x27) continue;
+
+                let ok = true;
+                for (let k = 2; k < 98 - 1; k++) {
+                    if (!isHexByte(u8[p + k])) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (!ok) continue;
+
+                const addr = r.base.add(p);
+                const s = safeReadUtf8N(addr, 98);
+                if (!s || s.length < 98) continue;
+
+                const keyHex = s.substring(2, 66).toLowerCase();
+                const saltHex = s.substring(66, 98).replace("'", '').toLowerCase();
+                const hitKey = saltHex + '|' + keyHex;
+                if (found[hitKey]) continue;
+                found[hitKey] = true;
+
+                const mapped = knownSalts[saltHex] || 'unknown_salt';
+                console.log('[DBKEY][cand] salt=' + saltHex + ' db=' + mapped + ' key=' + keyHex + ' addr=' + addr);
+            }
+        }
+
+        const totalCand = Object.keys(found).length;
+        console.log('[DBKEY][scan] ranges=' + scannedRanges + ' bytes=' + scannedBytes + ' candidates=' + totalCand);
+        if (totalCand === 0) {
+            console.log('[DBKEY][scan] no candidate key strings found in scanned rw- ranges');
+        }
+    } catch (e) {
+        console.log('[DBKEY][scan][err] ' + e);
+    }
+}
+
+function installDatabaseHooks() {
+    if (dbHookInstalled) return;
+    dbHookInstalled = true;
+
+    probeObjcDbClasses();
+    setTimeout(probeDebugFunctions, 1500);
+    setTimeout(scanMemoryForDbKeyStrings, 5000);
+
+    const openInfo = findExportMulti(['sqlite3_open_v2', 'sqlite3_open']);
+    if (openInfo) {
+        console.log('[DBHOOK] attach open -> ' + openInfo.name + ' @ ' + openInfo.ptr + ' from ' + openInfo.mod);
+        Interceptor.attach(openInfo.ptr, {
+            onEnter(args) {
+                this.filename = safeReadUtf8(args[0]);
+                this.ppDb = args[1];
+            },
+            onLeave(retval) {
+                try {
+                    if (retval.toInt32() !== 0) return;
+                    if (!this.filename || !wantDbPath(this.filename)) return;
+                    const dbPtr = this.ppDb.readPointer();
+                    const dbKey = ptrToKey(dbPtr);
+                    if (dbKey) {
+                        dbHandleToPath[dbKey] = this.filename;
+                    }
+                    console.log('[DBHOOK][open] ' + this.filename + ' db=' + dbKey);
+                } catch (e) {
+                    console.log('[DBHOOK][open][err] ' + e);
+                }
+            }
+        });
+    } else {
+        console.log('[DBHOOK] sqlite3_open hook not found');
+        logSymbolPattern('sqlite3.*open|open.*sqlite3|wcdb.*open', 30);
+    }
+
+    const keyInfo = findExportMulti(['sqlite3_key_v2', 'sqlite3_key']);
+    if (keyInfo) {
+        console.log('[DBHOOK] attach key -> ' + keyInfo.name + ' @ ' + keyInfo.ptr + ' from ' + keyInfo.mod);
+        Interceptor.attach(keyInfo.ptr, {
+            onEnter(args) {
+                try {
+                    const dbKey = ptrToKey(args[0]);
+                    const dbPath = dbHandleToPath[dbKey] || '';
+                    let name = '';
+                    let keyPtr = ptr(0);
+                    let keyLen = 0;
+
+                    if (keyInfo.name === 'sqlite3_key_v2') {
+                        name = safeReadUtf8(args[1]);
+                        keyPtr = args[2];
+                        keyLen = args[3].toInt32();
+                    } else {
+                        keyPtr = args[1];
+                        keyLen = args[2].toInt32();
+                    }
+
+                    let keyHex = '';
+                    try {
+                        if (keyPtr && !keyPtr.isNull() && keyLen > 0 && keyLen <= 128) {
+                            keyHex = hexdump(keyPtr, {offset: 0, length: keyLen, header: false, ansi: false}).replace(/\s+/g, '');
+                        }
+                    } catch (e) {}
+
+                    console.log('[DBHOOK][key] db=' + dbKey + ' path=' + dbPath + ' name=' + name + ' len=' + keyLen + ' key=' + keyHex);
+                } catch (e) {
+                    console.log('[DBHOOK][key][err] ' + e);
+                }
+            }
+        });
+    } else {
+        console.log('[DBHOOK] sqlite3_key hook not found');
+        logSymbolPattern('sqlite3.*key|key.*sqlite3|wcdb.*cipher|cipher.*key', 30);
+    }
+
+    const prepareNames = ['sqlite3_prepare_v2', 'sqlite3_prepare_v3', 'sqlite3_prepare16_v2', 'sqlite3_prepare16_v3', 'sqlite3_exec'];
+    let sqlHookCount = 0;
+    prepareNames.forEach(function(sym) {
+        const info = findExportMulti([sym]);
+        if (!info) return;
+        sqlHookCount++;
+        console.log('[DBHOOK] attach sql -> ' + info.name + ' @ ' + info.ptr + ' from ' + info.mod);
+        Interceptor.attach(info.ptr, {
+            onEnter(args) {
+                try {
+                    const dbKey = ptrToKey(args[0]);
+                    const dbPath = dbHandleToPath[dbKey] || '';
+                    let sql = '';
+                    if (sym.indexOf('prepare16') !== -1) {
+                        sql = safeReadUtf16(args[1]);
+                    } else {
+                        sql = safeReadUtf8(args[1]);
+                    }
+
+                    if (wantSql(sql) || (wantDbPath(dbPath) && sql)) {
+                        let outSql = sql;
+                        if (outSql.length > 500) {
+                            outSql = outSql.substring(0, 500) + '...';
+                        }
+                        console.log('[DBHOOK][sql] db=' + dbKey + ' path=' + dbPath + ' sym=' + sym + ' sql=' + outSql);
+                    }
+                } catch (e) {
+                    console.log('[DBHOOK][sql][err] ' + sym + ' ' + e);
+                }
+            }
+        });
+    });
+
+    if (sqlHookCount === 0) {
+        console.log('[DBHOOK] no sqlite prepare/exec symbol found');
+        logSymbolPattern('sqlite3.*prepare|prepare.*sqlite3|sqlite3.*exec|wcdb.*prepare|wcdb.*exec', 40);
+    }
+}
+
+// -------------------------数据库监控分区-------------------------
+
 // -------------------------基础函数分区-------------------------
 function toVarint(n) {
     let res = [];
@@ -1970,6 +2419,7 @@ function setReceiver() {
     });
 }
 
+setImmediate(installDatabaseHooks)
 setImmediate(setReceiver)
 
 // fileType:  HdImage => 1,Image => 2, thumbImage => 3, Video => 4, File => 5,
