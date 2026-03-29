@@ -1,0 +1,31 @@
+{
+  "onebot_dir": "__USER_RUNTIME__/onebot",
+  "devkit_dir": "__USER_RUNTIME__/.frida-devkit",
+  "onebot_bin": "onebot",
+
+  "wechat_conf": "../wechat_version/4_1_7_57_mac.json",
+
+  "frida_type": "local",
+  "wechat_pid": 0,
+  "gadget_addr": "127.0.0.1:27042",
+  "token": "MuseBot",
+  "log_level": "info",
+  "send_interval": 1000,
+  "conn_type": "http",
+
+  "trigger_listen": "127.0.0.1:3222",
+  "onebot_internal_listen": "127.0.0.1:3223",
+
+  "callback_listen": "127.0.0.1:18888",
+  "callback_path": "/onebot",
+  "callback_dump_jsonl": "__USER_RUNTIME__/callback_events.jsonl",
+
+  "callback_forward_enabled": false,
+  "callback_forward_url": "https://example.com/wechat/callback",
+  "callback_forward_timeout_ms": 8000,
+  "callback_forward_headers": {
+    "Authorization": "Bearer REPLACE_ME"
+  },
+
+  "auto_build": false
+}

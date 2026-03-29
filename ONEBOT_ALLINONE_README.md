@@ -140,6 +140,23 @@ python3 onebot_allinone.py --config onebot_allinone.multi.example.json
 查询能力与实例列表：
 - `GET /api/capabilities`
 
+## 回调转发（可选）
+
+在 `onebot_allinone.json` 里可配置：
+
+```json
+{
+  "callback_forward_enabled": true,
+  "callback_forward_url": "https://example.com/wechat/callback",
+  "callback_forward_timeout_ms": 8000,
+  "callback_forward_headers": {
+    "Authorization": "Bearer YOUR_TOKEN"
+  }
+}
+```
+
+开启后，onebot 的本地回调会继续保留，同时会额外 POST 一份同样的 JSON 到 `callback_forward_url`（best-effort，不阻塞本地回调返回）。
+
 ## 能力边界
 
 当前发送侧稳定支持：

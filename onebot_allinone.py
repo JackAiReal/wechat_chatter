@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OneBot all-in-one launcher:
-- starts a callback HTTP server (prints inbound callbacks)
+- starts a callback HTTP server (prints inbound callbacks; can optionally forward to your webhook)
 - starts a trigger proxy HTTP server (prints outbound API calls)
 - starts one or more onebot processes and wires send_url -> callback server
 
@@ -63,6 +63,12 @@ class Config:
     # shared listener ports
     trigger_listen: str = "127.0.0.1:3222"
     callback_listen: str = "127.0.0.1:18888"
+
+    # optional callback forwarding (best-effort)
+    callback_forward_enabled: bool = False
+    callback_forward_url: str = ""
+    callback_forward_timeout_ms: int = 8000
+    callback_forward_headers: Optional[Dict[str, str]] = None
 
     auto_build: bool = True
 
@@ -225,10 +231,20 @@ def write_json(handler: BaseHTTPRequestHandler, code: int, obj: Dict[str, Any]):
     handler.wfile.write(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
 
-def forward_http(target_url: str, method: str, body: bytes, content_type: Optional[str] = None) -> Tuple[int, bytes, str]:
+def forward_http(
+    target_url: str,
+    method: str,
+    body: bytes,
+    content_type: Optional[str] = None,
+    timeout: float = 20,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> Tuple[int, bytes, str]:
     headers: Dict[str, str] = {}
     if content_type:
         headers["Content-Type"] = content_type
+    if extra_headers:
+        headers.update({str(k): str(v) for k, v in extra_headers.items()})
+
     req = Request(
         target_url,
         data=body if method in ("POST", "PUT", "PATCH") else None,
@@ -236,7 +252,7 @@ def forward_http(target_url: str, method: str, body: bytes, content_type: Option
         headers=headers,
     )
     try:
-        with urlopen(req, timeout=20) as resp:
+        with urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read(), resp.headers.get("Content-Type", "application/json")
     except HTTPError as e:
         return e.code, e.read() if hasattr(e, "read") else b"", "application/json"
@@ -261,7 +277,13 @@ def parse_instance_hint(handler: BaseHTTPRequestHandler, body_instance: Optional
     return None
 
 
-def make_callback_handler(instances: List[InstanceConfig]) -> type[BaseHTTPRequestHandler]:
+def make_callback_handler(
+    instances: List[InstanceConfig],
+    callback_forward_enabled: bool = False,
+    callback_forward_url: str = "",
+    callback_forward_timeout_ms: int = 8000,
+    callback_forward_headers: Optional[Dict[str, str]] = None,
+) -> type[BaseHTTPRequestHandler]:
     inst_by_path = {i.callback_path: i for i in instances}
 
     class CallbackHandler(BaseHTTPRequestHandler):
@@ -304,6 +326,26 @@ def make_callback_handler(instances: List[InstanceConfig]) -> type[BaseHTTPReque
                 p.parent.mkdir(parents=True, exist_ok=True)
                 with p.open("a", encoding="utf-8") as f:
                     f.write(raw + "\n")
+
+            if callback_forward_enabled and callback_forward_url:
+                merged_headers: Dict[str, str] = {
+                    "X-OneBot-Instance": inst.name,
+                    "X-OneBot-Callback-Path": path_only,
+                }
+                if callback_forward_headers and isinstance(callback_forward_headers, dict):
+                    merged_headers.update({str(k): str(v) for k, v in callback_forward_headers.items()})
+
+                status, resp_body, _ = forward_http(
+                    target_url=callback_forward_url,
+                    method="POST",
+                    body=raw.encode("utf-8"),
+                    content_type="application/json",
+                    timeout=max(0.5, float(callback_forward_timeout_ms) / 1000.0),
+                    extra_headers=merged_headers,
+                )
+                log(prefix, f"forward -> {callback_forward_url} status={status}")
+                if resp_body:
+                    print(resp_body.decode("utf-8", errors="ignore"), flush=True)
 
             write_json(self, 200, {"ok": True})
 
@@ -696,11 +738,26 @@ def main():
 
     ensure_onebot_binary(cfg)
 
-    callback_server = start_server(cfg.callback_listen, make_callback_handler(instances), "callback")
+    callback_server = start_server(
+        cfg.callback_listen,
+        make_callback_handler(
+            instances,
+            callback_forward_enabled=cfg.callback_forward_enabled,
+            callback_forward_url=cfg.callback_forward_url,
+            callback_forward_timeout_ms=cfg.callback_forward_timeout_ms,
+            callback_forward_headers=cfg.callback_forward_headers,
+        ),
+        "callback",
+    )
     proxy_server = start_server(cfg.trigger_listen, make_trigger_proxy_handler(instances), "trigger")
 
     log("main", f"send HTTP to: http://{cfg.trigger_listen}")
     log("main", f"callback listen: http://{cfg.callback_listen}")
+    if cfg.callback_forward_enabled and cfg.callback_forward_url:
+        log(
+            "main",
+            f"callback forwarding enabled -> {cfg.callback_forward_url} timeout={cfg.callback_forward_timeout_ms}ms",
+        )
     for inst in instances:
         log(
             "main",
