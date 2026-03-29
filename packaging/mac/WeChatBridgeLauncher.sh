@@ -14,12 +14,33 @@ RUNTIME_CONFIG="$APP_SUPPORT_DIR/runtime.config.json"
 
 LOG_DIR="$HOME/Library/Logs/$APP_NAME"
 LOG_FILE="$LOG_DIR/bridge.log"
+LOCK_DIR="$APP_SUPPORT_DIR/.launch-lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
 
 mkdir -p "$APP_SUPPORT_DIR" "$LOG_DIR"
 touch "$LOG_FILE"
 exec >>"$LOG_FILE" 2>&1
 
 echo "==== [$APP_NAME] startup $(date '+%Y-%m-%d %H:%M:%S') ===="
+
+if [[ -d "$LOCK_DIR" ]]; then
+  old_pid=""
+  if [[ -f "$LOCK_PID_FILE" ]]; then
+    old_pid="$(cat "$LOCK_PID_FILE" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$old_pid" ]] && kill -0 "$old_pid" >/dev/null 2>&1; then
+    echo "another launcher instance is running (pid=$old_pid), skip"
+    exit 0
+  fi
+
+  echo "stale lock detected, cleaning"
+  rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
+fi
+
+mkdir -p "$LOCK_DIR"
+echo "$$" > "$LOCK_PID_FILE"
+trap 'rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true' EXIT
 
 notify() {
   local msg="$1"
@@ -98,15 +119,43 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 }
 
+read_trigger_addr() {
+  "$PYTHON_BIN" - "$RUNTIME_CONFIG" <<'PY'
+import json
+import sys
+
+p = sys.argv[1]
+try:
+    with open(p, 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+    print(cfg.get('trigger_listen', '127.0.0.1:3222'))
+except Exception:
+    print('127.0.0.1:3222')
+PY
+}
+
 sync_runtime_payload
 bootstrap_user_config_if_missing
 render_runtime_config
 
-notify "服务启动中（HTTP: 127.0.0.1:3222）"
+TRIGGER_ADDR="$(read_trigger_addr)"
+TRIGGER_URL="http://$TRIGGER_ADDR"
+
+if pgrep -f "$USER_RUNTIME_DIR/onebot_allinone.py" >/dev/null 2>&1; then
+  if curl -sS --max-time 1 "$TRIGGER_URL/api/capabilities" >/dev/null 2>&1; then
+    notify "WeChatBridge 已在后台运行，正在打开控制台"
+    open "$TRIGGER_URL/bridge" >/dev/null 2>&1 || true
+    exit 0
+  fi
+fi
+
+notify "服务启动中（HTTP: $TRIGGER_ADDR）"
 
 echo "python: $PYTHON_BIN"
 echo "config: $RUNTIME_CONFIG"
+echo "managed_config: $USER_CONFIG"
 
 auto_chdir="$USER_RUNTIME_DIR"
 cd "$auto_chdir"
-exec "$PYTHON_BIN" "$USER_RUNTIME_DIR/onebot_allinone.py" --config "$RUNTIME_CONFIG"
+(sleep 2; open "$TRIGGER_URL/bridge" >/dev/null 2>&1 || true) &
+exec "$PYTHON_BIN" "$USER_RUNTIME_DIR/onebot_allinone.py" --config "$RUNTIME_CONFIG" --managed-config "$USER_CONFIG"

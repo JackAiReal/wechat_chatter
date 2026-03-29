@@ -140,6 +140,12 @@ python3 onebot_allinone.py --config onebot_allinone.multi.example.json
 查询能力与实例列表：
 - `GET /api/capabilities`
 
+内置控制台与状态（本地）：
+- `GET /bridge`（浏览器控制台）
+- `GET /api/bridge/status`（注入/运行状态）
+- `GET /api/bridge/config`（读取配置）
+- `POST /api/bridge/config`（保存配置，需重启生效）
+
 ## 回调转发（可选）
 
 在 `onebot_allinone.json` 里可配置：

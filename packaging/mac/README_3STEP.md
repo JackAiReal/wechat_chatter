@@ -10,8 +10,9 @@
 ## 第 2 步：安装并配置 WeChatBridge
 1. 双击挂载 `WeChatBridge-*.dmg`，把 `WeChatBridge.app` 拖到 `Applications`。
 2. 双击启动一次 `WeChatBridge.app`（首次会自动生成配置并打开编辑器）。
-3. 编辑配置文件：
-   - `~/Library/Application Support/WeChatBridge/config.json`
+3. 编辑配置文件（两种方式选一种）：
+   - 方式 A：浏览器打开控制台（推荐）：`http://127.0.0.1:3222/bridge`
+   - 方式 B：直接编辑文件：`~/Library/Application Support/WeChatBridge/config.json`
    - 重点字段：
      - `trigger_listen`（默认 `127.0.0.1:3222`）
      - `callback_forward_enabled`（是否转发回调）
@@ -24,6 +25,7 @@
 
 ## 第 3 步：启动并验证 API
 1. 再次双击启动 `WeChatBridge.app`。
+   - 若后台已运行，再次双击不会重复注入微信，只会直接打开控制台。
 2. 验证能力接口：
 
 ```bash
