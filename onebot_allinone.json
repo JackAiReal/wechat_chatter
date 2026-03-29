@@ -4,6 +4,8 @@
   "onebot_bin": "onebot",
   "wechat_conf": "../wechat_version/4_1_7_57_mac.json",
 
+  "frida_type": "local",
+  "wechat_pid": 0,
   "gadget_addr": "127.0.0.1:27042",
   "token": "MuseBot",
   "log_level": "info",
